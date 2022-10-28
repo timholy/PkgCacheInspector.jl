@@ -1,5 +1,7 @@
 module PkgCacheInspector
 
+using Printf
+
 export info_cachefile, PkgCacheSizes, PkgCacheInfo
 
 using Base: PkgId, require_lock, assert_havelock, isvalid_cache_header, parse_cache_header, isvalid_file_crc,
@@ -17,10 +19,13 @@ struct PkgCacheSizes
 end
 
 function Base.show(io::IO, szs::PkgCacheSizes)
-    nd = 0
+    indent = get(io, :indent, 0)
+    nd = ntot = 0
     nf = length(fieldnames(typeof(szs)))
     for i = 1:nf
-        nd = max(nd, ndigits(getfield(szs, i)))
+        nb = getfield(szs, i)
+        nd = max(nd, ndigits(nb))
+        ntot += nb
     end
     displaynames = [
         "system",
@@ -32,12 +37,15 @@ function Base.show(io::IO, szs::PkgCacheSizes)
         "fptrs"
     ]
     l = maximum(length, displaynames)
+    println(io, " "^indent, "Segment sizes (bytes):")
     for i = 1:nf
-        println(io, rpad(displaynames[i] * ": ", l+2), lpad(string(getfield(szs, i)), nd))
+        nb = getfield(szs, i)
+        println(io, " "^indent, rpad(displaynames[i] * ": ", l+2), lpad(string(nb), nd), " (", @sprintf("% 6.2f", 100*nb/ntot), "%)")
     end
 end
 
 struct PkgCacheInfo
+    cachefile::String
     modules::Vector{Any}
     init_order::Vector{Any}
     external_methods::Vector{Any}
@@ -49,14 +57,38 @@ struct PkgCacheInfo
 end
 
 function Base.show(io::IO, info::PkgCacheInfo)
-    println(io, "modules: ", info.modules)
-    !isempty(info.init_order) && println(io, "init order: ", info.init_order)
-    !isempty(info.external_methods) && println(io, length(info.external_methods), " external methods")
-    !isempty(info.new_specializations) && println(io, length(info.new_specializations), " new specializations of external methods")
-    !isempty(info.new_method_roots) && println(io, length(info.new_method_roots) ÷ 2, " external methods with new roots")
-    !isempty(info.external_targets) && println(io, length(info.external_targets) ÷ 3, " external targets")
-    !isempty(info.edges) && println(io, length(info.edges) ÷ 2, " edges")
-    show(io, info.cachesizes)
+    nspecs = count_module_specializations(info.new_specializations)
+    nspecs = sort(collect(nspecs); by=last, rev=true)
+    nspecs_tot = sum(last, nspecs)
+
+    println(io, "Contents of ", info.cachefile, ':')
+    println(io, "  modules: ", info.modules)
+    !isempty(info.init_order) && println(io, "  init order: ", info.init_order)
+    !isempty(info.external_methods) && println(io, "  ", length(info.external_methods), " external methods")
+    if !isempty(info.new_specializations)
+        print(io, "  ", length(info.new_specializations), " new specializations of external methods ")
+        for i = 1:3
+            m, n = nspecs[i]
+            print(io, i==1 ? "(" : ", ", m, " ", round(100*n/nspecs_tot; digits=1), "%")
+        end
+        println(io, ')')
+    end
+    !isempty(info.new_method_roots) && println(io, "  ", length(info.new_method_roots) ÷ 2, " external methods with new roots")
+    !isempty(info.external_targets) && println(io, "  ", length(info.external_targets) ÷ 3, " external targets")
+    !isempty(info.edges) && println(io, "  ", length(info.edges) ÷ 2, " edges")
+    show(IOContext(io, :indent => 2), info.cachesizes)
+end
+
+moduleof(m::Method) = m.module
+moduleof(m::Module) = m
+
+function count_module_specializations(new_specializations)
+    modcount = Dict{Module,Int}()
+    for ci in new_specializations
+        m = moduleof(ci.def.def)
+        modcount[m] = get(modcount, m, 0) + 1
+    end
+    return modcount
 end
 
 function info_cachefile(path::String, depmods::Vector{Any})
@@ -64,7 +96,7 @@ function info_cachefile(path::String, depmods::Vector{Any})
     if isa(sv, Exception)
         throw(sv)
     end
-    return PkgCacheInfo(sv[1:7]..., PkgCacheSizes(sv[8]...))
+    return PkgCacheInfo(path, sv[1:7]..., PkgCacheSizes(sv[8]...))
 end
 
 function info_cachefile(pkg::PkgId, path::String)
