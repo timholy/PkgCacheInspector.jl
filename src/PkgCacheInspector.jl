@@ -67,11 +67,11 @@ function Base.show(io::IO, info::PkgCacheInfo)
     !isempty(info.external_methods) && println(io, "  ", length(info.external_methods), " external methods")
     if !isempty(info.new_specializations)
         print(io, "  ", length(info.new_specializations), " new specializations of external methods ")
-        for i = 1:3
+        for i = 1:min(3, length(nspecs))
             m, n = nspecs[i]
             print(io, i==1 ? "(" : ", ", m, " ", round(100*n/nspecs_tot; digits=1), "%")
         end
-        println(io, ')')
+        println(io, length(nspecs) > 3 ? ", ...)" : ")")
     end
     !isempty(info.new_method_roots) && println(io, "  ", length(info.new_method_roots) ÷ 2, " external methods with new roots")
     !isempty(info.external_targets) && println(io, "  ", length(info.external_targets) ÷ 3, " external targets")
