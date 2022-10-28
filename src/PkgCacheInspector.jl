@@ -33,7 +33,7 @@ function Base.show(io::IO, szs::PkgCacheSizes)
     ]
     l = maximum(length, displaynames)
     for i = 1:nf
-        println(io, rpad(displaynames[i], l), ": ", lpad(string(getfield(szs, i)), nd))
+        println(io, rpad(displaynames[i] * ": ", l+2), lpad(string(getfield(szs, i)), nd))
     end
 end
 
