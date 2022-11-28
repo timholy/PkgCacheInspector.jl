@@ -18,6 +18,17 @@ struct PkgCacheSizes
     fptrlist::Int
 end
 
+const cache_displaynames = [
+        "system",
+        "isbits",
+        "symbols",
+        "tags",
+        "relocations",
+        "gvars",
+        "fptrs"
+    ]
+const cache_displaynames_l = maximum(length, cache_displaynames)
+
 function Base.show(io::IO, szs::PkgCacheSizes)
     indent = get(io, :indent, 0)
     nd = ntot = 0
@@ -27,20 +38,16 @@ function Base.show(io::IO, szs::PkgCacheSizes)
         nd = max(nd, ndigits(nb))
         ntot += nb
     end
-    displaynames = [
-        "system",
-        "isbits",
-        "symbols",
-        "tags",
-        "relocations",
-        "gvars",
-        "fptrs"
-    ]
-    l = maximum(length, displaynames)
     println(io, " "^indent, "Segment sizes (bytes):")
     for i = 1:nf
         nb = getfield(szs, i)
-        println(io, " "^indent, rpad(displaynames[i] * ": ", l+2), lpad(string(nb), nd), " (", @sprintf("% 6.2f", 100*nb/ntot), "%)")
+        println(io,
+            " "^indent,
+            rpad(cache_displaynames[i] * ": ", cache_displaynames_l+2),
+            lpad(string(nb), nd),
+            " (",
+            @sprintf("% 6.2f", 100*nb/ntot),
+            "%)")
     end
 end
 
@@ -53,6 +60,7 @@ struct PkgCacheInfo
     new_method_roots::Vector{Any}
     external_targets::Vector{Any}
     edges::Vector{Any}
+    filesize::Int
     cachesizes::PkgCacheSizes
 end
 
@@ -76,6 +84,7 @@ function Base.show(io::IO, info::PkgCacheInfo)
     !isempty(info.new_method_roots) && println(io, "  ", length(info.new_method_roots) ÷ 2, " external methods with new roots")
     !isempty(info.external_targets) && println(io, "  ", length(info.external_targets) ÷ 3, " external targets")
     !isempty(info.edges) && println(io, "  ", length(info.edges) ÷ 2, " edges")
+    println(io, "  ", rpad("file size: ", cache_displaynames_l+2), info.filesize, " (", Base.format_bytes(info.filesize),")")
     show(IOContext(io, :indent => 2), info.cachesizes)
 end
 
@@ -96,7 +105,7 @@ function info_cachefile(path::String, depmods::Vector{Any})
     if isa(sv, Exception)
         throw(sv)
     end
-    return PkgCacheInfo(path, sv[1:7]..., PkgCacheSizes(sv[8]...))
+    return PkgCacheInfo(path, sv[1:7]..., filesize(path), PkgCacheSizes(sv[8]...))
 end
 
 function info_cachefile(pkg::PkgId, path::String)
