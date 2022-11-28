@@ -105,7 +105,7 @@ function info_cachefile(pkg::PkgId, path::String)
         io = open(path, "r")
         try
             # isvalid_cache_header returns checksum id or zero
-            isvalid_cache_header(io) > 0 || return ArgumentError("Invalid header in cache file $path.")
+            isvalid_cache_header(io) == 0 && return ArgumentError("Invalid header in cache file $path.")
             depmodnames = parse_cache_header(io)[3]
             isvalid_file_crc(io) || return ArgumentError("Invalid checksum in cache file $path.")
         finally
