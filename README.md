@@ -12,19 +12,22 @@ Here's a quick demo:
 julia> using PkgCacheInspector
 
 julia> info_cachefile("Colors")
-modules: Any[Colors]
-68 external methods
-1776 new specializations of external methods
-371 external methods with new roots
-5113 external targets
-3796 edges
-system:      2021616
-isbits:      2048623
-symbols:       13345
-tags:          28990
-relocations:  214509
-gvars:          5048
-fptrs:          3112
+Contents of /Users/user/.julia/compiled/v1.9/Colors/NKjaT_1DCqx.ji:
+  modules: Any[Colors]
+  68 external methods
+  1759 new specializations of external methods (Base 50.1%, ColorTypes 29.8%, Base.Broadcast 11.3%, ...)
+  361 external methods with new roots
+  5115 external targets
+  3796 edges
+  file size:   4922032 (4.694 MiB)
+  Segment sizes (bytes):
+  system:      1971024 ( 46.65%)
+  isbits:      1998959 ( 47.31%)
+  symbols:       13360 (  0.32%)
+  tags:          28804 (  0.68%)
+  relocations:  213041 (  5.04%)
+  gvars:             0 (  0.00%)
+  fptrs:             0 (  0.00%)
 ```
 
 At the top of the display, you can see a summary of the numbers of various items:
