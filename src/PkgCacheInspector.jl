@@ -148,4 +148,23 @@ end
 
 info_cachefile(pkgname::AbstractString) = info_cachefile(Base.identify_package(pkgname))
 
+function clone_targets(path::String)
+    targets = Base.parse_cache_header(path)[end]
+    io = IOBuffer(targets)
+
+    ntargets = read(io, Int32)
+    for i in 1:ntargets
+        flags = read(io, Int32)
+        nfeature = read(io, Int32)
+        feature_en = read(io, 4*nfeature)
+        feature_dis = read(io, 4*nfeature)
+        name_len = read(io, Int32)
+        name = String(read(io, name_len))
+        ext_features_len = read(io, Int32)
+        ext_features = read(io, ext_features_len)
+
+        @info "Target" name flags feature_en feature_dis ext_features
+    end
+end
+
 end
