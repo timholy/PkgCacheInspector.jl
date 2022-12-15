@@ -91,8 +91,12 @@ function count_module_specializations(new_specializations)
     return modcount
 end
 
-function info_cachefile(path::String, depmods::Vector{Any})
-    sv = ccall(:jl_restore_incremental, Any, (Cstring, Any, Cint), path, depmods, true)
+function info_cachefile(path::String, depmods::Vector{Any}, isocache::Bool=false)
+    if isocache
+        sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint), path, depmods, true)
+    else
+        sv = ccall(:jl_restore_incremental, Any, (Cstring, Any, Cint), path, depmods, true)
+    end
     if isa(sv, Exception)
         throw(sv)
     end
@@ -122,6 +126,9 @@ function info_cachefile(pkg::PkgId, path::String)
             depmods[i] = dep
         end
         # then load the file
+        if isdefined(Base, :ocachefile_from_cachefile)
+            return info_cachefile(Base.ocachefile_from_cachefile(path), depmods, true)
+        end
         info_cachefile(path, depmods)
     end
 end
