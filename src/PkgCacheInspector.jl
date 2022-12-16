@@ -100,7 +100,7 @@ function count_module_specializations(new_specializations)
     return modcount
 end
 
-function info_cachefile(path::String, depmods::Vector{Any}, isocache::Bool=false)
+function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, isocache::Bool=false)
     if isocache
         sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint), path, depmods, true)
     else
@@ -108,6 +108,9 @@ function info_cachefile(path::String, depmods::Vector{Any}, isocache::Bool=false
     end
     if isa(sv, Exception)
         throw(sv)
+    end
+    if isdefined(Base, :register_restored_modules)
+        Base.register_restored_modules(sv, pkg, path)
     end
     return PkgCacheInfo(path, sv[1:7]..., filesize(path), PkgCacheSizes(sv[8]...))
 end
@@ -130,15 +133,15 @@ function info_cachefile(pkg::PkgId, path::String)
             modkey, build_id = depmodnames[i]
             dep = _tryrequire_from_serialized(modkey, build_id)
             if !isa(dep, Module)
-                return dep
+                throw(dep)
             end
             depmods[i] = dep
         end
         # then load the file
         if isdefined(Base, :ocachefile_from_cachefile)
-            return info_cachefile(Base.ocachefile_from_cachefile(path), depmods, true)
+            return info_cachefile(pkg, Base.ocachefile_from_cachefile(path), depmods, true)
         end
-        info_cachefile(path, depmods)
+        info_cachefile(pkg, path, depmods)
     end
 end
 
