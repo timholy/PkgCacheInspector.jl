@@ -1,7 +1,7 @@
 name = "PkgCacheInspector"
 uuid = "a408fb95-4068-4cfa-a7f1-12fd503bd86c"
 authors = ["Tim Holy <tim.holy@gmail.com> and contributors"]
-version = "0.1.0"
+version = "1.0.0"
 
 [deps]
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
