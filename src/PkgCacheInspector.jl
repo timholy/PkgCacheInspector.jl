@@ -67,7 +67,7 @@ end
 function Base.show(io::IO, info::PkgCacheInfo)
     nspecs = count_module_specializations(info.new_specializations)
     nspecs = sort(collect(nspecs); by=last, rev=true)
-    nspecs_tot = sum(last, nspecs)
+    nspecs_tot = sum(last, nspecs; init=0)
 
     println(io, "Contents of ", info.cachefile, ':')
     println(io, "  modules: ", info.modules)
