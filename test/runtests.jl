@@ -3,6 +3,8 @@ using MethodAnalysis
 using Test
 using Pkg
 
+@show Base.JLOptions().code_coverage
+
 Pkg.precompile()
 
 module EmptyPkg end
