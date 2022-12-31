@@ -5,6 +5,8 @@ using Pkg
 
 Pkg.precompile()
 
+module EmptyPkg end
+
 @testset "PkgCacheInspector.jl" begin
     info = info_cachefile("Colors")
     @test isa(info, PkgCacheInfo)
@@ -15,4 +17,10 @@ Pkg.precompile()
     mis = methodinstances(info)
     @test eltype(mis) === Core.MethodInstance
     @test length(mis) > 100
+
+    # Empty pkgimages do not cause issues
+    info = PkgCacheInfo("EmptyPkg.so", [EmptyPkg])
+    str = sprint(show, info)
+    @test occursin(r"modules: .*EmptyPkg\]", str)
+    @test occursin(r"file size: +0 \(0 bytes\)", str)
 end

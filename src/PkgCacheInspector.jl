@@ -17,6 +17,7 @@ struct PkgCacheSizes
     gvarlist::Int
     fptrlist::Int
 end
+PkgCacheSizes() = PkgCacheSizes(0, 0, 0, 0, 0, 0, 0)   # for testing
 
 const cache_displaynames = [
         "system",
@@ -63,11 +64,12 @@ struct PkgCacheInfo
     filesize::Int
     cachesizes::PkgCacheSizes
 end
+PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes())
 
 function Base.show(io::IO, info::PkgCacheInfo)
     nspecs = count_module_specializations(info.new_specializations)
     nspecs = sort(collect(nspecs); by=last, rev=true)
-    nspecs_tot = sum(last, nspecs)
+    nspecs_tot = sum(last, nspecs; init=0)
 
     println(io, "Contents of ", info.cachefile, ':')
     println(io, "  modules: ", info.modules)
