@@ -3,7 +3,7 @@ using MethodAnalysis
 using Test
 using Pkg
 
-@show Base.JLOptions().code_coverage
+@show Base.JLOptions().code_coverage   # coverage must be off to write .so pkgimages
 
 Pkg.precompile()
 
