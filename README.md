@@ -1,11 +1,14 @@
 # PkgCacheInspector
 
 [![Build Status](https://github.com/timholy/PkgCacheInspector.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/timholy/PkgCacheInspector.jl/actions/workflows/CI.yml?query=branch%3Amain)
+[![Documentation](https://img.shields.io/badge/docs-stable-blue.svg)](https://timholy.github.io/PkgCacheInspector.jl/stable)
 
 This package provides insight about what's stored in Julia's package precompile files.
-This works only on Julia 1.9 and above, as it targets the new pkgimg format.
+This works only on Julia 1.9 and above, as it targets the new pkgimage format.
 
-Here's a quick demo:
+## Basic usage
+
+Here's a quick demo. It assumes you've already installed and precompiled the [Colors package](https://github.com/JuliaGraphics/Colors.jl) (if not, use `Pkg.add("Colors")`).
 
 ```julia
 julia> using PkgCacheInspector
@@ -38,5 +41,28 @@ At the top of the display, you can see a summary of the numbers of various items
 - edges: a list of internal dependencies among compiled specializations in the package
 
 The table of numbers at the end reports the sizes of various segments of the cache file.
+More detail on these points can be found in the [documentation](https://timholy.github.io/PkgCacheInspector.jl/stable).
 
 The display is just a summary; you can extract the full lists from the return value of `info_cachefile`.
+
+## Finding duplicated specializations
+
+Two "downstream" packages can force identical specializations of the same "upstream" method. In such cases, there may be opportunities to reduce loading time by moving some of the precompilation upstream. You can detect common specializations with the [MethodAnalysis package](https://github.com/timholy/MethodAnalysis.jl):
+
+```
+julia> using PkgCacheInspector
+
+julia> cf1 = info_cachefile("ImageCore");
+
+julia> cf2 = info_cachefile("FlameGraphs");
+
+julia> using MethodAnalysis
+
+julia> intersect(methodinstances(cf1), methodinstances(cf2))
+Set{Core.MethodInstance} with 30 elements:
+  MethodInstance for convert(::Type{Vector{ColorTypes.RGB{FixedPointNumbers.N0f8}}}, ::Vector{ColorTypes.RGB{FixedPoint…
+  MethodInstance for getindex(::Base.RefValue{ColorTypes.RGB{FixedPointNumbers.N0f8}})
+  ⋮
+```
+
+There are no guarantees that moving precompilation upstream will make a measureable change in load time. Any improvements in load time will likely depend on the complexity and number of the common `MethodInstances`.
