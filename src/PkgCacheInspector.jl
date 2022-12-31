@@ -1,6 +1,7 @@
 module PkgCacheInspector
 
 using Printf
+using DocStringExtensions
 
 export info_cachefile, PkgCacheSizes, PkgCacheInfo
 
@@ -8,13 +9,45 @@ using Base: PkgId, require_lock, assert_havelock, isvalid_cache_header, parse_ca
             _tryrequire_from_serialized, find_all_in_cache_path, locate_package, stale_cachefile
 using Core: SimpleVector
 
+"""
+$(TYPEDEF)
+
+Stores the sizes of different "sections" of the pkgimage. The main section is the package image itself.
+However, reconstructing a pkgimage for use requires auxillary data, like the addresses of internal
+pointers that need to be modified to account for the actual base address into which the
+pkgimage was loaded. Each form of auxillary data gets stored in distinct sections.
+
+$(FIELDS)
+"""
 struct PkgCacheSizes
+    """
+    Size of the image. This is the portion of the file that gets returns by `info_cachefile`.
+    """
     sysdata::Int
+    """
+    Size of the `const` internal data section (storing things not visible from Julia, like datatype layouts).
+    """
     isbitsdata::Int
+    """
+    Size of the symbol section, for Symbols stored in the image.
+    """
     symboldata::Int
+    """
+    Size of the GC tags section, holding references to objects that require special re-initialization for GC.
+    """
     tagslist::Int
+    """
+    Size of the relocation-list section, holding references to within-image pointers that need to be offset
+    by the actual base pointer upon reloading.
+    """
     reloclist::Int
+    """
+    Size of the "gvar" (global variable) list of LLVM-encoded objects.
+    """
     gvarlist::Int
+    """
+    Size of the function-pointer list, referencing native code.
+    """
     fptrlist::Int
 end
 PkgCacheSizes() = PkgCacheSizes(0, 0, 0, 0, 0, 0, 0)   # for testing
@@ -52,16 +85,58 @@ function Base.show(io::IO, szs::PkgCacheSizes)
     end
 end
 
+"""
+$(TYPEDEF)
+
+Objects stored the pkgimage. The main contents are the modules themselves, but some additional objects
+are stored external to the modules. It also contains the data used to perform invalidation-checks.
+
+$(FIELDS)
+"""
 struct PkgCacheInfo
     cachefile::String
+    """
+    The list of modules stored in the package image. The final one is the "top" package module.
+    """
     modules::Vector{Any}
+    """
+    The list of modules with an `__init__` function, in the order in which they should be called.
+    """
     init_order::Vector{Any}
+    """
+    The list of methods added to external modules. E.g., `Base.push!(v::MyNewVector, x)`.
+    """
     external_methods::Vector{Any}
+    """
+    The list of novel specializations of external methods that were created during package precompilation.
+    E.g., `get(::Dict{String,Float16}, ::String, ::Nothing)`: `Base` owns the method and all the types in
+    this specialization, but might not have precompiled it until it was needed by a package.
+    """
     new_specializations::Vector{Any}
+    """
+    New GC roots added to external methods. These are an important but internal detail of how type-inferred code
+    is compressed for serialization.
+    """
     new_method_roots::Vector{Any}
+    """
+    The list of already-inferred MethodInstances that get called by items stored in this cachefile.
+    If any of these are no longer valid (or no longer the method that would be chosen by dispatch),
+    then some compiled code in this package image must be invalidated and recompiled.
+    """
     external_targets::Vector{Any}
+    """
+    A lookup table of `external_targets` dependencies: `[mi1, indxs1, mi2, indxs2...]` means that `mi1`
+    (cached in this pkgimage) depends on `external_targets[idxs1]`; `mi2` depends on `external_targets[idxs2]`,
+    and so on.
+    """
     edges::Vector{Any}
+    """
+    The total size of the cache file.
+    """
     filesize::Int
+    """
+    Sizes of the individual sections. See [`PkgCacheSizes`](@ref).
+    """
     cachesizes::PkgCacheSizes
 end
 PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes())
@@ -158,6 +233,22 @@ function info_cachefile(pkg::PkgId)
     return info_cachefile(pkg, cachefiles[idx])
 end
 
+"""
+    info_cachefile(pkgname::AbstractString) → cf
+    info_cachefile(pkgid::Base.PkgId) → cf
+    info_cachefile(pkgid::Base.PkgId, ji_cachefilename) → cf
+
+Return a snapshot `cf` of a package cache file. Displaying `cf` prints a summary of the contents,
+but the fields of `cf` can be inspected to get further information (see [`PkgCacheInfo`](@ref)).
+
+After calling `info_cachefile("MyPkg")` you can also execute `using MyPkg` to make the image loaded by
+`info_cachefile` available for use. This can allow you to load `cf`s for multiple packages into the same session
+for deeper analysis.
+
+!!! warn
+    `info_cachefile` is meant to be run in a "clean" session---running it after having already loaded
+    the package may produce unexpected behavior.
+"""
 info_cachefile(pkgname::AbstractString) = info_cachefile(Base.identify_package(pkgname))
 
 end

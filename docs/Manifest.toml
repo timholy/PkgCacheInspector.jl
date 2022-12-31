@@ -1,6 +1,6 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.9.0-DEV"
+julia_version = "1.10.0-DEV"
 manifest_format = "2.0"
 project_hash = "73c4e0a5731b0f7f809818f56264f6304f593bac"
 
@@ -69,9 +69,16 @@ uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
 version = "2.4.2"
 
 [[deps.PkgCacheInspector]]
+deps = ["DocStringExtensions", "Printf"]
 path = ".."
 uuid = "a408fb95-4068-4cfa-a7f1-12fd503bd86c"
 version = "0.1.0"
+
+    [deps.PkgCacheInspector.extensions]
+    MethodAnalysisExt = "MethodAnalysis"
+
+    [deps.PkgCacheInspector.weakdeps]
+    MethodAnalysis = "85b6ec6f-f7df-4429-9514-a64bcd9ee824"
 
 [[deps.Printf]]
 deps = ["Unicode"]
