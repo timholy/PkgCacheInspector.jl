@@ -1,7 +1,6 @@
 # PkgCacheInspector
 
 [![Build Status](https://github.com/timholy/PkgCacheInspector.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/timholy/PkgCacheInspector.jl/actions/workflows/CI.yml?query=branch%3Amain)
-[![Coverage](https://codecov.io/gh/timholy/PkgCacheInspector.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/timholy/PkgCacheInspector.jl)
 
 This package provides insight about what's stored in Julia's package precompile files.
 This works only on Julia 1.9 and above, as it targets the new pkgimg format.
