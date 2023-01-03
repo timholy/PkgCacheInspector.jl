@@ -6,7 +6,7 @@ CurrentModule = PkgCacheInspector
 
 Documentation for [PkgCacheInspector](https://github.com/timholy/PkgCacheInspector.jl).
 
-!!! info
+!!! tip
     See the [README](https://github.com/timholy/PkgCacheInspector.jl#pkgcacheinspector)
     for a usage demo.
 
