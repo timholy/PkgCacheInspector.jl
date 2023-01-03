@@ -94,6 +94,9 @@ are stored external to the modules. It also contains the data used to perform in
 $(FIELDS)
 """
 struct PkgCacheInfo
+    """
+    The filename of the cache.
+    """
     cachefile::String
     """
     The list of modules stored in the package image. The final one is the "top" package module.
