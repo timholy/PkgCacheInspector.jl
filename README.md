@@ -1,7 +1,7 @@
 # PkgCacheInspector
 
 [![Build Status](https://github.com/timholy/PkgCacheInspector.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/timholy/PkgCacheInspector.jl/actions/workflows/CI.yml?query=branch%3Amain)
-[![Documentation](https://img.shields.io/badge/docs-stable-blue.svg)](https://timholy.github.io/PkgCacheInspector.jl/stable)
+[![Documentation](https://img.shields.io/badge/docs-dev-blue.svg)](https://timholy.github.io/PkgCacheInspector.jl/dev)
 
 This package provides insight about what's stored in Julia's package precompile files.
 This works only on Julia 1.9 and above, as it targets the new pkgimage format.
@@ -41,7 +41,7 @@ At the top of the display, you can see a summary of the numbers of various items
 - edges: a list of internal dependencies among compiled specializations in the package
 
 The table of numbers at the end reports the sizes of various segments of the cache file.
-More detail on these points can be found in the [documentation](https://timholy.github.io/PkgCacheInspector.jl/stable).
+More detail on these points can be found in the [documentation](https://timholy.github.io/PkgCacheInspector.jl/dev).
 
 The display is just a summary; you can extract the full lists from the return value of `info_cachefile`.
 
