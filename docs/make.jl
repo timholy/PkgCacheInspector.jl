@@ -22,4 +22,5 @@ makedocs(;
 deploydocs(;
     repo="github.com/timholy/PkgCacheInspector.jl",
     devbranch="main",
+    push_preview=true,
 )

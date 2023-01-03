@@ -94,6 +94,9 @@ are stored external to the modules. It also contains the data used to perform in
 $(FIELDS)
 """
 struct PkgCacheInfo
+    """
+    The filename of the cache.
+    """
     cachefile::String
     """
     The list of modules stored in the package image. The final one is the "top" package module.
@@ -246,8 +249,9 @@ After calling `info_cachefile("MyPkg")` you can also execute `using MyPkg` to ma
 for deeper analysis.
 
 !!! warn
-    `info_cachefile` is meant to be run in a "clean" session---running it after having already loaded
-    the package may produce unexpected behavior.
+    Your session may be corrupted if you run `info_cachefile` for a package that had
+    already been loaded into your session. Restarting with a clean session and using `info_cachefile`
+    before otherwise loading the package is recommended.
 """
 info_cachefile(pkgname::AbstractString) = info_cachefile(Base.identify_package(pkgname))
 
