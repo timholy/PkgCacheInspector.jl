@@ -45,6 +45,9 @@ More detail on these points can be found in the [documentation](https://timholy.
 
 The display is just a summary; you can extract the full lists from the return value of `info_cachefile`.
 
+### Note
+Your session may be corrupted if you run `info_cachefile` for a package that had already been loaded into your session. Restarting with a clean session and using info_cachefile before otherwise loading the package is recommended.
+
 ## Finding duplicated specializations
 
 Two "downstream" packages can force identical specializations of the same "upstream" method. In such cases, there may be opportunities to reduce loading time by moving some of the precompilation upstream. You can detect common specializations with the [MethodAnalysis package](https://github.com/timholy/MethodAnalysis.jl):
