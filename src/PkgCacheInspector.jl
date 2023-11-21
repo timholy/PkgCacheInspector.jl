@@ -202,7 +202,12 @@ function info_cachefile(pkg::PkgId, path::String)
         try
             # isvalid_cache_header returns checksum id or zero
             isvalid_cache_header(io) == 0 && return ArgumentError("Invalid header in cache file $path.")
-            depmodnames = parse_cache_header(io)[3]
+            # https://github.com/JuliaLang/julia/pull/49866
+            if VERSION >= v"1.11.0-DEV.946" # lower bound could be lower
+                depmodnames = parse_cache_header(io, path)[3]
+            else
+                depmodnames = parse_cache_header(io)[3]
+            end
             isvalid_file_crc(io) || return ArgumentError("Invalid checksum in cache file $path.")
         finally
             close(io)
