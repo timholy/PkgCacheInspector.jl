@@ -203,10 +203,11 @@ function info_cachefile(pkg::PkgId, path::String)
             # isvalid_cache_header returns checksum id or zero
             isvalid_cache_header(io) == 0 && return ArgumentError("Invalid header in cache file $path.")
             @static if VERSION >= v"1.11-DEV.683"
-                depmodnames = parse_cache_header(io, path)[3]
+                depmodnames, clone_targets = parse_cache_header(io, path)[[3,7]]
             else
-                depmodnames = parse_cache_header(io)[3]
+                depmodnames, clone_targets = parse_cache_header(io)[[3,7]]
             end
+            @show Base.parse_image_targets(clone_targets)
             isvalid_file_crc(io) || return ArgumentError("Invalid checksum in cache file $path.")
         finally
             close(io)
