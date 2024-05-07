@@ -1,3 +1,6 @@
 [deps]
 Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 PkgCacheInspector = "a408fb95-4068-4cfa-a7f1-12fd503bd86c"
+
+[compat]
+Documenter = "1"
