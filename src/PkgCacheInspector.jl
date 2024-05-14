@@ -191,9 +191,19 @@ end
 
 function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false)
     if isocache
-        sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint), path, depmods, true)
+        @static if VERSION >= v"1.11.0-DEV.922" # https://github.com/JuliaLang/julia/pull/52123
+            sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint, Cstring, Cint), path, depmods, true, pkg.name, false)
+        elseif VERSION >= v"1.10.0-DEV.1145" # https://github.com/JuliaLang/julia/pull/49538
+            sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint, Cstring), path, depmods, true, pkg.name)
+        else
+            sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint), path, depmods, true)
+        end
     else
-        sv = ccall(:jl_restore_incremental, Any, (Cstring, Any, Cint), path, depmods, true)
+        if VERSION >= v"1.10.0-DEV.1145" # https://github.com/JuliaLang/julia/pull/49538
+            sv = ccall(:jl_restore_incremental, Any, (Cstring, Any, Cint, Cstring), path, depmods, true, pkg.name)
+        else
+            sv = ccall(:jl_restore_incremental, Any, (Cstring, Any, Cint), path, depmods, true)
+        end
     end
     if isa(sv, Exception)
         throw(sv)
