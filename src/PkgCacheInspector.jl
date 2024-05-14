@@ -77,6 +77,7 @@ function Base.show(io::IO, szs::PkgCacheSizes)
         nb = getfield(szs, i)
         println(io,
             " "^indent,
+            "  ",
             rpad(cache_displaynames[i] * ": ", cache_displaynames_l+2),
             lpad(string(nb), nd),
             " (",
@@ -141,8 +142,12 @@ struct PkgCacheInfo
     Sizes of the individual sections. See [`PkgCacheSizes`](@ref).
     """
     cachesizes::PkgCacheSizes
+    """
+    The image targets that were cloned into the pkgimage, if used.
+    """
+    image_targets::Vector{Any}
 end
-PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes())
+PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes(), [])
 
 function Base.show(io::IO, info::PkgCacheInfo)
     nspecs = count_module_specializations(info.new_specializations)
@@ -166,6 +171,10 @@ function Base.show(io::IO, info::PkgCacheInfo)
     !isempty(info.edges) && println(io, "  ", length(info.edges) ÷ 2, " edges")
     println(io, "  ", rpad("file size: ", cache_displaynames_l+2), info.filesize, " (", Base.format_bytes(info.filesize),")")
     show(IOContext(io, :indent => 2), info.cachesizes)
+    println(io, "  Image targets: ")
+    for t in info.image_targets
+        println(io, "    ", t)
+    end
 end
 
 moduleof(m::Method) = m.module
@@ -180,7 +189,7 @@ function count_module_specializations(new_specializations)
     return modcount
 end
 
-function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, isocache::Bool=false)
+function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false)
     if isocache
         sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint), path, depmods, true)
     else
@@ -192,20 +201,25 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, isocache
     if isdefined(Base, :register_restored_modules)
         Base.register_restored_modules(sv, pkg, path)
     end
-    return PkgCacheInfo(path, sv[1:7]..., filesize(path), PkgCacheSizes(sv[8]...))
+    return PkgCacheInfo(path, sv[1:7]..., filesize(path), PkgCacheSizes(sv[8]...), image_targets)
 end
 
 function info_cachefile(pkg::PkgId, path::String)
     return @lock require_lock begin
-        local depmodnames
+        local depmodnames, image_targets
         io = open(path, "r")
         try
             # isvalid_cache_header returns checksum id or zero
             isvalid_cache_header(io) == 0 && return ArgumentError("Invalid header in cache file $path.")
             @static if VERSION >= v"1.11-DEV.683"
-                depmodnames = parse_cache_header(io, path)[3]
+                depmodnames, clone_targets = parse_cache_header(io, path)[[3,7]]
             else
-                depmodnames = parse_cache_header(io)[3]
+                depmodnames, clone_targets = parse_cache_header(io)[[3,7]]
+            end
+            image_targets = if isdefined(Base, :parse_image_targets)
+                Any[Base.parse_image_targets(clone_targets)...]
+            else
+                Any["(parsing image targets not supported in this version of Julia)"]
             end
             isvalid_file_crc(io) || return ArgumentError("Invalid checksum in cache file $path.")
         finally
@@ -223,9 +237,9 @@ function info_cachefile(pkg::PkgId, path::String)
         end
         # then load the file
         if isdefined(Base, :ocachefile_from_cachefile)
-            return info_cachefile(pkg, Base.ocachefile_from_cachefile(path), depmods, true)
+            return info_cachefile(pkg, Base.ocachefile_from_cachefile(path), depmods, image_targets, true)
         end
-        info_cachefile(pkg, path, depmods)
+        info_cachefile(pkg, path, depmods, image_targets)
     end
 end
 
