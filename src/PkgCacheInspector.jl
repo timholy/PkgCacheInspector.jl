@@ -145,7 +145,7 @@ struct PkgCacheInfo
     """
     The image targets that were cloned into the pkgimage, if used.
     """
-    image_targets::Vector{Base.ImageTarget}
+    image_targets::Vector{Any}
 end
 PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes())
 
@@ -171,7 +171,10 @@ function Base.show(io::IO, info::PkgCacheInfo)
     !isempty(info.edges) && println(io, "  ", length(info.edges) ÷ 2, " edges")
     println(io, "  ", rpad("file size: ", cache_displaynames_l+2), info.filesize, " (", Base.format_bytes(info.filesize),")")
     show(IOContext(io, :indent => 2), info.cachesizes)
-    print(io, "  Image targets: ", info.image_targets)
+    println(io, "  Image targets: ")
+    for t in info.image_targets
+        println(io, "    ", t)
+    end
 end
 
 moduleof(m::Method) = m.module
@@ -186,7 +189,7 @@ function count_module_specializations(new_specializations)
     return modcount
 end
 
-function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Base.ImageTarget}, isocache::Bool=false)
+function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false)
     if isocache
         sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint), path, depmods, true)
     else
@@ -213,7 +216,11 @@ function info_cachefile(pkg::PkgId, path::String)
             else
                 depmodnames, clone_targets = parse_cache_header(io)[[3,7]]
             end
-            image_targets = Base.parse_image_targets(clone_targets)
+            image_targets = if isdefined(Base, :parse_image_targets)
+                Any[Base.parse_image_targets(clone_targets)...]
+            else
+                Any["(parsing image targets not supported in this version of Julia)"]
+            end
             isvalid_file_crc(io) || return ArgumentError("Invalid checksum in cache file $path.")
         finally
             close(io)
