@@ -147,7 +147,7 @@ struct PkgCacheInfo
     """
     image_targets::Vector{Any}
 end
-PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes())
+PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes(), [])
 
 function Base.show(io::IO, info::PkgCacheInfo)
     nspecs = count_module_specializations(info.new_specializations)
