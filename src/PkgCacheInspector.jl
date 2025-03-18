@@ -102,7 +102,7 @@ struct PkgCacheInfo
     """
     The list of modules stored in the package image. The final one is the "top" package module.
     """
-    modules::Vector{Any}
+    modules::Vector{Module}
     """
     The list of modules with an `__init__` function, in the order in which they should be called.
     """
@@ -123,12 +123,6 @@ struct PkgCacheInfo
     """
     new_method_roots::Vector{Any}
     """
-    The list of already-inferred MethodInstances that get called by items stored in this cachefile.
-    If any of these are no longer valid (or no longer the method that would be chosen by dispatch),
-    then some compiled code in this package image must be invalidated and recompiled.
-    """
-    external_targets::Vector{Any}
-    """
     A lookup table of `external_targets` dependencies: `[mi1, indxs1, mi2, indxs2...]` means that `mi1`
     (cached in this pkgimage) depends on `external_targets[idxs1]`; `mi2` depends on `external_targets[idxs2]`,
     and so on.
@@ -147,7 +141,7 @@ struct PkgCacheInfo
     """
     image_targets::Vector{Any}
 end
-PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes(), [])
+PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], 0, PkgCacheSizes(), [])
 
 function Base.show(io::IO, info::PkgCacheInfo)
     nspecs = count_module_specializations(info.new_specializations)
@@ -167,7 +161,6 @@ function Base.show(io::IO, info::PkgCacheInfo)
         println(io, length(nspecs) > 3 ? ", ...)" : ")")
     end
     !isempty(info.new_method_roots) && println(io, "  ", length(info.new_method_roots) ÷ 2, " external methods with new roots")
-    !isempty(info.external_targets) && println(io, "  ", length(info.external_targets) ÷ 3, " external targets")
     !isempty(info.edges) && println(io, "  ", length(info.edges) ÷ 2, " edges")
     println(io, "  ", rpad("file size: ", cache_displaynames_l+2), info.filesize, " (", Base.format_bytes(info.filesize),")")
     show(IOContext(io, :indent => 2), info.cachesizes)
@@ -201,7 +194,7 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_ta
     if isdefined(Base, :register_restored_modules)
         Base.register_restored_modules(sv, pkg, path)
     end
-    return PkgCacheInfo(path, sv[1:7]..., filesize(path), PkgCacheSizes(sv[8]...), image_targets)
+    return PkgCacheInfo(path, sv[1:6]..., filesize(path), PkgCacheSizes(sv[7]...), image_targets)
 end
 
 function info_cachefile(pkg::PkgId, path::String)
