@@ -184,16 +184,14 @@ end
 
 function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false)
     if isocache
-        sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint), path, depmods, true)
+        sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint, Cstring, Cint), path, depmods, true, pkg.name, false)
     else
-        sv = ccall(:jl_restore_incremental, Any, (Cstring, Any, Cint), path, depmods, true)
+        sv = ccall(:jl_restore_incremental, Any, (Cstring, Any, Cint, Cstring), path, depmods, true, pkg.name)
     end
     if isa(sv, Exception)
         throw(sv)
     end
-    if isdefined(Base, :register_restored_modules)
-        Base.register_restored_modules(sv, pkg, path)
-    end
+    Base.register_restored_modules(sv, pkg, path)
     return PkgCacheInfo(path, sv[1:6]..., filesize(path), PkgCacheSizes(sv[7]...), image_targets)
 end
 
@@ -204,16 +202,8 @@ function info_cachefile(pkg::PkgId, path::String)
         try
             # isvalid_cache_header returns checksum id or zero
             isvalid_cache_header(io) == 0 && return ArgumentError("Invalid header in cache file $path.")
-            @static if VERSION >= v"1.11-DEV.683"
-                depmodnames, clone_targets = parse_cache_header(io, path)[[3,7]]
-            else
-                depmodnames, clone_targets = parse_cache_header(io)[[3,7]]
-            end
-            image_targets = if isdefined(Base, :parse_image_targets)
-                Any[Base.parse_image_targets(clone_targets)...]
-            else
-                Any["(parsing image targets not supported in this version of Julia)"]
-            end
+            depmodnames, clone_targets = parse_cache_header(io, path)[[3,7]]
+            image_targets = Any[Base.parse_image_targets(clone_targets)...]
             isvalid_file_crc(io) || return ArgumentError("Invalid checksum in cache file $path.")
         finally
             close(io)
