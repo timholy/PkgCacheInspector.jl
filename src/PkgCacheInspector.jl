@@ -158,8 +158,10 @@ function Base.show(io::IO, info::PkgCacheInfo)
     internal_specs_sorted = Pair{Module,Int}[]
 
     internal_specs = count_internal_specializations(info)
-    internal_specs_sorted = sort(collect(internal_specs); by=last, rev=true)
-    total_internal_specs = sum(last, internal_specs_sorted; init=0)
+    if internal_specs !== nothing
+        internal_specs_sorted = sort(collect(internal_specs); by=last, rev=true)
+        total_internal_specs = sum(last, internal_specs_sorted; init=0)
+    end
 
     println(io, "Contents of ", info.cachefile, ':')
     println(io, "  modules: ", info.modules)
