@@ -148,9 +148,28 @@ function Base.show(io::IO, info::PkgCacheInfo)
     nspecs = sort(collect(nspecs); by=last, rev=true)
     nspecs_tot = sum(last, nspecs; init=0)
 
+    # Count internal methods
+    internal_methods = count_internal_methods(info)
+    total_internal = sum(values(internal_methods))
+    
     println(io, "Contents of ", info.cachefile, ':')
     println(io, "  modules: ", info.modules)
     !isempty(info.init_order) && println(io, "  init order: ", info.init_order)
+    
+    # Show internal methods
+    if total_internal > 0
+        println(io, "  ", total_internal, " internal methods")
+        if length(internal_methods) > 1
+            print(io, "    (")
+            sorted_internal = sort(collect(internal_methods); by=last, rev=true)
+            for i = 1:length(sorted_internal)
+                mod, count = sorted_internal[i]
+                print(io, i==1 ? "" : ", ", nameof(mod), " ", count)
+            end
+            println(io, ")")
+        end
+    end
+    
     !isempty(info.external_methods) && println(io, "  ", length(info.external_methods), " external methods")
     if !isempty(info.new_specializations)
         print(io, "  ", length(info.new_specializations), " new specializations of external methods ")
@@ -180,6 +199,42 @@ function count_module_specializations(new_specializations)
         modcount[m] = get(modcount, m, 0) + 1
     end
     return modcount
+end
+
+"""
+    count_internal_methods(info::PkgCacheInfo) → Dict{Module,Int}
+
+Count the number of methods defined within each of the package's own modules.
+These are methods that belong to the modules stored in the package image,
+as opposed to external methods which extend functions from other modules.
+"""
+function count_internal_methods(info::PkgCacheInfo)
+    method_counts = Dict{Module,Int}()
+    for mod in info.modules
+        count = 0
+        # Count methods defined in this module
+        for name in names(mod; all=true)
+            if isdefined(mod, name)
+                obj = getfield(mod, name)
+                if isa(obj, Function)
+                    for method in methods(obj)
+                        if method.module == mod
+                            count += 1
+                        end
+                    end
+                elseif isa(obj, Type) && isa(obj, DataType)
+                    # Count constructors
+                    for method in methods(obj)
+                        if method.module == mod
+                            count += 1
+                        end
+                    end
+                end
+            end
+        end
+        method_counts[mod] = count
+    end
+    return method_counts
 end
 
 function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false)
