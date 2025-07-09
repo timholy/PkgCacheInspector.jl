@@ -140,8 +140,133 @@ struct PkgCacheInfo
     The image targets that were cloned into the pkgimage, if used.
     """
     image_targets::Vector{Any}
+    """
+    Verbose output mode for displaying method information.
+    """
+    verbose::Symbol
 end
-PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], 0, PkgCacheSizes(), [])
+PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], 0, PkgCacheSizes(), [], :none)
+
+"""
+    show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
+
+Display detailed information about internal methods when verbose mode is enabled.
+"""
+function show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
+    internal_methods = count_internal_methods(info)
+    total_internal = sum(values(internal_methods))
+    
+    if total_internal > 0
+        println(io, "  Internal methods (", total_internal, " total):")
+        sorted_internal = sort(collect(internal_methods); by=last, rev=true)
+        for (mod, count) in sorted_internal
+            println(io, "    ", nameof(mod), ": ", count, " methods")
+            # Show individual methods for each module
+            for name in names(mod; all=true)
+                if isdefined(mod, name)
+                    obj = getfield(mod, name)
+                    if isa(obj, Function)
+                        method_list = Method[]
+                        for method in methods(obj)
+                            if method.module == mod
+                                push!(method_list, method)
+                            end
+                        end
+                        if !isempty(method_list)
+                            println(io, "      ", name, " (", length(method_list), " methods)")
+                            for method in method_list
+                                println(io, "        ", method)
+                            end
+                        end
+                    elseif isa(obj, Type) && isa(obj, DataType)
+                        # Show constructors
+                        method_list = Method[]
+                        for method in methods(obj)
+                            if method.module == mod
+                                push!(method_list, method)
+                            end
+                        end
+                        if !isempty(method_list)
+                            println(io, "      ", name, " (", length(method_list), " constructors)")
+                            for method in method_list
+                                println(io, "        ", method)
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+"""
+    show_verbose_external_methods(io::IO, info::PkgCacheInfo)
+
+Display detailed information about external methods when verbose mode is enabled.
+"""
+function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
+    # Separate truly external methods from internal ones
+    truly_external_methods = []
+    internal_method_specializations = []
+    
+    for ci in info.external_methods
+        if isa(ci, Core.CodeInstance) && isa(ci.def, Core.MethodInstance)
+            mi = ci.def
+            if isa(mi.def, Method)
+                method = mi.def
+                # Check if this method is truly external (not from package's own modules)
+                if method.module ∉ info.modules
+                    push!(truly_external_methods, (ci, method, mi))
+                else
+                    push!(internal_method_specializations, (ci, method, mi))
+                end
+            end
+        end
+    end
+    
+    # Show truly external methods
+    if !isempty(truly_external_methods)
+        println(io, "  External methods (extending functions from other modules) (", length(truly_external_methods), " total):")
+        for (ci, method, mi) in truly_external_methods
+            println(io, "    ", method, " in ", method.module)
+            if !isempty(mi.specTypes.parameters)
+                println(io, "        specialized for: ", mi.specTypes)
+            end
+        end
+    end
+    
+
+    
+    if !isempty(info.new_specializations)
+        println(io, "  New specializations of external methods (", length(info.new_specializations), " total):")
+        # Group by module for better organization
+        module_specs = Dict{Module, Vector{Any}}()
+        for spec in info.new_specializations
+            if isa(spec, Core.CodeInstance) && isa(spec.def, Core.MethodInstance)
+                mi = spec.def
+                if isa(mi.def, Method)
+                    method = mi.def
+                    mod = method.module
+                    # Only include truly external methods here
+                    if mod ∉ info.modules
+                        if !haskey(module_specs, mod)
+                            module_specs[mod] = []
+                        end
+                        push!(module_specs[mod], (method, mi.specTypes))
+                    end
+                end
+            end
+        end
+        
+        sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
+        for (mod, specs) in sorted_modules
+            println(io, "    ", nameof(mod), " (", length(specs), " specializations):")
+            for (method, spectype) in specs  # Show all specializations
+                println(io, "      ", method.name, " specialized for ", spectype)
+            end
+        end
+    end
+end
 
 function Base.show(io::IO, info::PkgCacheInfo)
     nspecs = count_module_specializations(info.new_specializations)
@@ -167,8 +292,11 @@ function Base.show(io::IO, info::PkgCacheInfo)
     println(io, "  modules: ", info.modules)
     !isempty(info.init_order) && println(io, "  init order: ", info.init_order)
 
-    # Show internal methods
-    if total_internal > 0
+    # Handle verbose modes
+    if info.verbose == :internal || info.verbose == :all
+        show_verbose_internal_methods(io, info)
+    elseif total_internal > 0
+        # Show internal methods summary
         println(io, "  ", total_internal, " internal methods")
         if length(internal_methods) > 1
             print(io, "    (")
@@ -182,27 +310,46 @@ function Base.show(io::IO, info::PkgCacheInfo)
     end
 
     # Show internal specializations
-    if internal_specs === nothing
-        println(io, "  specializations of internal methods: (requires MethodAnalysis.jl)")
-    elseif total_internal_specs > 0
-        print(io, "  ", total_internal_specs, " specializations of internal methods ")
-        for i = 1:min(3, length(internal_specs_sorted))
-            mod, count = internal_specs_sorted[i]
-            pct = round(100*count/total_internal_specs; digits=1)
-            print(io, i==1 ? "(" : ", ", nameof(mod), " ", pct, "%")
+    if info.verbose == :internal || info.verbose == :all
+        # Show verbose internal specializations when in internal verbose mode
+        if internal_specs !== nothing && total_internal_specs > 0
+            println(io, "  Internal method specializations (", total_internal_specs, " total):")
+            for (mod, count) in internal_specs_sorted
+                println(io, "    ", nameof(mod), ": ", count, " specializations")
+                # TODO: Could add individual specialization details here if needed
+            end
         end
-        println(io, length(internal_specs_sorted) > 3 ? ", ...)" : ")")
+    else
+        # Show internal specializations summary (for :none and :external modes)
+        if internal_specs === nothing
+            println(io, "  specializations of internal methods: (requires MethodAnalysis.jl)")
+        elseif total_internal_specs > 0
+            print(io, "  ", total_internal_specs, " specializations of internal methods ")
+            for i = 1:min(3, length(internal_specs_sorted))
+                mod, count = internal_specs_sorted[i]
+                pct = round(100*count/total_internal_specs; digits=1)
+                print(io, i==1 ? "(" : ", ", nameof(mod), " ", pct, "%")
+            end
+            println(io, length(internal_specs_sorted) > 3 ? ", ...)" : ")")
+        end
     end
 
-    !isempty(info.external_methods) && println(io, "  ", length(info.external_methods), " external methods")
-    if !isempty(info.new_specializations)
-        print(io, "  ", length(info.new_specializations), " new specializations of external methods ")
-        for i = 1:min(3, length(nspecs))
-            m, n = nspecs[i]
-            print(io, i==1 ? "(" : ", ", m, " ", round(100*n/nspecs_tot; digits=1), "%")
+    # Handle external methods based on verbose mode
+    if info.verbose == :external || info.verbose == :all
+        show_verbose_external_methods(io, info)
+    else
+        # Show external methods summary
+        !isempty(info.external_methods) && println(io, "  ", length(info.external_methods), " external methods")
+        if !isempty(info.new_specializations)
+            print(io, "  ", length(info.new_specializations), " new specializations of external methods ")
+            for i = 1:min(3, length(nspecs))
+                m, n = nspecs[i]
+                print(io, i==1 ? "(" : ", ", m, " ", round(100*n/nspecs_tot; digits=1), "%")
+            end
+            println(io, length(nspecs) > 3 ? ", ...)" : ")")
         end
-        println(io, length(nspecs) > 3 ? ", ...)" : ")")
     end
+
     !isempty(info.new_method_roots) && println(io, "  ", length(info.new_method_roots) ÷ 2, " external methods with new roots")
     !isempty(info.edges) && println(io, "  ", length(info.edges) ÷ 2, " edges")
     println(io, "  ", rpad("file size: ", cache_displaynames_l+2), info.filesize, " (", Base.format_bytes(info.filesize),")")
@@ -260,7 +407,7 @@ function count_internal_methods(info::PkgCacheInfo)
     return method_counts
 end
 
-function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false)
+function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false, verbose::Symbol=:none)
     if isocache
         sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint, Cstring, Cint), path, depmods, true, pkg.name, false)
     else
@@ -270,10 +417,11 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_ta
         throw(sv)
     end
     Base.register_restored_modules(sv, pkg, path)
-    return PkgCacheInfo(path, sv[1:6]..., filesize(path), PkgCacheSizes(sv[7]...), image_targets)
+    info = PkgCacheInfo(path, sv[1:6]..., filesize(path), PkgCacheSizes(sv[7]...), image_targets, verbose)
+    return info
 end
 
-function info_cachefile(pkg::PkgId, path::String)
+function info_cachefile(pkg::PkgId, path::String, verbose::Symbol=:none)
     return @lock require_lock begin
         local depmodnames, image_targets
         io = open(path, "r")
@@ -298,13 +446,13 @@ function info_cachefile(pkg::PkgId, path::String)
         end
         # then load the file
         if isdefined(Base, :ocachefile_from_cachefile)
-            return info_cachefile(pkg, Base.ocachefile_from_cachefile(path), depmods, image_targets, true)
+            return info_cachefile(pkg, Base.ocachefile_from_cachefile(path), depmods, image_targets, true, verbose)
         end
-        info_cachefile(pkg, path, depmods, image_targets)
+        info_cachefile(pkg, path, depmods, image_targets, false, verbose)
     end
 end
 
-function info_cachefile(pkg::PkgId)
+function info_cachefile(pkg::PkgId, verbose::Symbol=:none)
     cachefiles = find_all_in_cache_path(pkg)
     isempty(cachefiles) && error(pkg, " has not yet been precompiled for julia ", Base.VERSION)
     pkgpath = locate_package(pkg)
@@ -312,16 +460,22 @@ function info_cachefile(pkg::PkgId)
         stale_cachefile(pkgpath, cf) !== true
     end
     idx === nothing && error("all cache files for ", pkg, " are stale, please precompile")
-    return info_cachefile(pkg, cachefiles[idx])
+    return info_cachefile(pkg, cachefiles[idx], verbose)
 end
 
 """
-    info_cachefile(pkgname::AbstractString) → cf
-    info_cachefile(pkgid::Base.PkgId) → cf
-    info_cachefile(pkgid::Base.PkgId, ji_cachefilename) → cf
+    info_cachefile(pkgname::AbstractString; verbose::Symbol=:none) → cf
+    info_cachefile(pkgid::Base.PkgId; verbose::Symbol=:none) → cf
+    info_cachefile(pkgid::Base.PkgId, ji_cachefilename; verbose::Symbol=:none) → cf
 
 Return a snapshot `cf` of a package cache file. Displaying `cf` prints a summary of the contents,
 but the fields of `cf` can be inspected to get further information (see [`PkgCacheInfo`](@ref)).
+
+The `verbose` parameter controls the level of detail in the output:
+- `:none` (default): Show summary information only
+- `:internal`: Show detailed information about internal methods
+- `:external`: Show detailed information about external methods and specializations  
+- `:all`: Show detailed information about both internal and external methods
 
 After calling `info_cachefile("MyPkg")` you can also execute `using MyPkg` to make the image loaded by
 `info_cachefile` available for use. This can allow you to load `cf`s for multiple packages into the same session
@@ -332,6 +486,6 @@ for deeper analysis.
     already been loaded into your session. Restarting with a clean session and using `info_cachefile`
     before otherwise loading the package is recommended.
 """
-info_cachefile(pkgname::AbstractString) = info_cachefile(Base.identify_package(pkgname))
+info_cachefile(pkgname::AbstractString; verbose::Symbol=:none) = info_cachefile(Base.identify_package(pkgname), verbose)
 
 end
