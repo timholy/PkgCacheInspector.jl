@@ -174,8 +174,16 @@ function show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
                         end
                         if !isempty(method_list)
                             println(io, "      ", name, " (", length(method_list), " methods)")
+                            # Capture method output in buffer and sort
+                            method_buffer = IOBuffer()
+                            method_io = IOContext(method_buffer, stdout)
                             for method in method_list
-                                println(io, "        ", method)
+                                println(method_io, "        ", method)
+                            end
+                            method_lines = split(String(take!(method_buffer)), '\n', keepempty=false)
+                            sort!(method_lines)
+                            for line in method_lines
+                                println(io, line)
                             end
                         end
                     elseif isa(obj, Type) && isa(obj, DataType)
@@ -188,8 +196,16 @@ function show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
                         end
                         if !isempty(method_list)
                             println(io, "      ", name, " (", length(method_list), " constructors)")
+                            # Capture constructor output in buffer and sort
+                            constructor_buffer = IOBuffer()
+                            constructor_io = IOContext(constructor_buffer, stdout)
                             for method in method_list
-                                println(io, "        ", method)
+                                println(constructor_io, "        ", method)
+                            end
+                            constructor_lines = split(String(take!(constructor_buffer)), '\n', keepempty=false)
+                            sort!(constructor_lines)
+                            for line in constructor_lines
+                                println(io, line)
                             end
                         end
                     end
@@ -227,11 +243,19 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
     # Show truly external methods
     if !isempty(truly_external_methods)
         println(io, "  External methods (extending functions from other modules) (", length(truly_external_methods), " total):")
+        # Capture external methods output in buffer and sort
+        external_buffer = IOBuffer()
+        external_io = IOContext(external_buffer, stdout)
         for (ci, method, mi) in truly_external_methods
-            println(io, "    ", method, " in ", method.module)
+            println(external_io, "    ", method, " in ", method.module)
             if !isempty(mi.specTypes.parameters)
-                println(io, "        specialized for: ", mi.specTypes)
+                println(external_io, "        specialized for: ", mi.specTypes)
             end
+        end
+        external_lines = split(String(take!(external_buffer)), '\n', keepempty=false)
+        sort!(external_lines)
+        for line in external_lines
+            println(io, line)
         end
     end
     
@@ -261,8 +285,16 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
         sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
         for (mod, specs) in sorted_modules
             println(io, "    ", nameof(mod), " (", length(specs), " specializations):")
-            for (method, spectype) in specs  # Show all specializations
-                println(io, "      ", method.name, " specialized for ", spectype)
+            # Capture specializations output in buffer and sort
+            specs_buffer = IOBuffer()
+            specs_io = IOContext(specs_buffer, stdout)
+            for (method, spectype) in specs
+                println(specs_io, "      ", method.name, " specialized for ", spectype)
+            end
+            specs_lines = split(String(take!(specs_buffer)), '\n', keepempty=false)
+            sort!(specs_lines)
+            for line in specs_lines
+                println(io, line)
             end
         end
     end
