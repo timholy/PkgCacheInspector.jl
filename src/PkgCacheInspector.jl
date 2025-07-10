@@ -72,6 +72,12 @@ function Base.show(io::IO, szs::PkgCacheSizes)
         nd = max(nd, ndigits(nb))
         ntot += nb
     end
+
+    if ntot == 0
+        println(io, " "^indent, "Segment sizes: (no size data available)")
+        return
+    end
+
     println(io, " "^indent, "Segment sizes (bytes):")
     for i = 1:nf
         nb = getfield(szs, i)
@@ -155,7 +161,7 @@ Display detailed information about internal methods when verbose mode is enabled
 function show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
     internal_methods = count_internal_methods(info)
     total_internal = sum(values(internal_methods))
-    
+
     if total_internal > 0
         println(io, "  Internal methods (", total_internal, " total):")
         sorted_internal = sort(collect(internal_methods); by=last, rev=true)
@@ -224,7 +230,7 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
     # Separate truly external methods from internal ones
     truly_external_methods = []
     internal_method_specializations = []
-    
+
     for ci in info.external_methods
         if isa(ci, Core.CodeInstance) && isa(ci.def, Core.MethodInstance)
             mi = ci.def
@@ -239,7 +245,7 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
             end
         end
     end
-    
+
     # Show truly external methods
     if !isempty(truly_external_methods)
         println(io, "  External methods (extending functions from other modules) (", length(truly_external_methods), " total):")
@@ -258,9 +264,9 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
             println(io, line)
         end
     end
-    
 
-    
+
+
     if !isempty(info.new_specializations)
         println(io, "  New specializations of external methods (", length(info.new_specializations), " total):")
         # Group by module for better organization
@@ -281,7 +287,7 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
                 end
             end
         end
-        
+
         sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
         for (mod, specs) in sorted_modules
             println(io, "    ", nameof(mod), " (", length(specs), " specializations):")
@@ -323,6 +329,9 @@ function Base.show(io::IO, info::PkgCacheInfo)
     println(io, "Contents of ", info.cachefile, ':')
     println(io, "  modules: ", info.modules)
     !isempty(info.init_order) && println(io, "  init order: ", info.init_order)
+
+    # Show multicolor bar summary
+    show_data_bar(io, info)
 
     # Handle verbose modes
     if info.verbose == :internal || info.verbose == :all
@@ -449,7 +458,28 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_ta
         throw(sv)
     end
     Base.register_restored_modules(sv, pkg, path)
-    info = PkgCacheInfo(path, sv[1:6]..., filesize(path), PkgCacheSizes(sv[7]...), image_targets, verbose)
+    # Extract cache sizes - sv[7] should contain the size information
+    cache_sizes = if length(sv) >= 7
+        # Try to extract cache sizes, being more flexible about the format
+        size_data = sv[7]
+        if isa(size_data, Tuple) && length(size_data) >= 7
+            # Take the first 7 elements if there are more
+            PkgCacheSizes(size_data[1:7]...)
+        elseif isa(size_data, AbstractVector) && length(size_data) >= 7
+            # Handle vector format
+            PkgCacheSizes(size_data[1:7]...)
+        else
+            # Fallback: try the old direct expansion
+            try
+                PkgCacheSizes(sv[7]...)
+            catch
+                PkgCacheSizes()  # fallback to empty sizes
+            end
+        end
+    else
+        PkgCacheSizes()  # fallback to empty sizes
+    end
+    info = PkgCacheInfo(path, sv[1:6]..., filesize(path), cache_sizes, image_targets, verbose)
     return info
 end
 
@@ -506,7 +536,7 @@ but the fields of `cf` can be inspected to get further information (see [`PkgCac
 The `verbose` parameter controls the level of detail in the output:
 - `:none` (default): Show summary information only
 - `:internal`: Show detailed information about internal methods
-- `:external`: Show detailed information about external methods and specializations  
+- `:external`: Show detailed information about external methods and specializations
 - `:all`: Show detailed information about both internal and external methods
 
 After calling `info_cachefile("MyPkg")` you can also execute `using MyPkg` to make the image loaded by
@@ -519,5 +549,83 @@ for deeper analysis.
     before otherwise loading the package is recommended.
 """
 info_cachefile(pkgname::AbstractString; verbose::Symbol=:none) = info_cachefile(Base.identify_package(pkgname), verbose)
+
+"""
+    show_data_bar(io::IO, info::PkgCacheInfo)
+
+Display a multicolor bar summary showing the distribution of different cache components.
+"""
+function show_data_bar(io::IO, info::PkgCacheInfo)
+    # Calculate counts
+    internal_methods = count_internal_methods(info)
+    total_internal_methods = sum(values(internal_methods))
+    external_methods_count = length(info.external_methods)
+    external_specs_count = length(info.new_specializations)
+
+    internal_specs_count = 0
+    internal_specs = count_internal_specializations(info)
+    if internal_specs !== nothing
+        internal_specs_count = sum(values(internal_specs))
+    end
+
+    edges_count = length(info.edges) ÷ 2
+    method_roots_count = length(info.new_method_roots) ÷ 2
+
+    # Combine methods and specializations into two main categories
+    total_internal = total_internal_methods + internal_specs_count
+    total_external = external_methods_count + external_specs_count
+
+    # Calculate total for proportions
+    methods_total = total_internal + total_external
+
+    if methods_total == 0
+        println(io, "  Summary: [no methods or specializations]")
+        return
+    end
+
+    # Bar width for methods
+    bar_width = 50
+
+    # Calculate segments for two categories only
+    internal_width = round(Int, bar_width * total_internal / methods_total)
+    external_width = bar_width - internal_width
+
+    # ANSI color codes
+    colors = (
+        internal = "\e[32m",      # Green for internal
+        external = "\e[34m",      # Blue for external
+        metadata = "\e[90m",      # Gray for metadata
+        reset = "\e[0m"
+    )
+
+    # Build the methods bar
+    print(io, "  Methods: [")
+    print(io, colors.internal, "■"^internal_width, colors.reset)
+    print(io, " | ")  # Separator between internal and external
+    print(io, colors.external, "■"^external_width, colors.reset)
+    print(io, "]")
+
+    # Add metadata information compactly
+    metadata_parts = String[]
+    edges_count > 0 && push!(metadata_parts, "$(edges_count) edges")
+    method_roots_count > 0 && push!(metadata_parts, "$(method_roots_count) roots")
+
+    if !isempty(metadata_parts)
+        print(io, " $(colors.metadata)(", join(metadata_parts, ", "), ")$(colors.reset)")
+    end
+    println(io)
+
+    # Legend for two categories
+    legend_parts = String[]
+    push!(legend_parts, "[")
+    total_internal > 0 && push!(legend_parts, "$(colors.internal)internal specializations$(colors.reset)")
+    push!(legend_parts, "|")  # Separator between internal and external
+    total_external > 0 && push!(legend_parts, "$(colors.external)external specializations$(colors.reset)")
+    push!(legend_parts, "]")
+
+    if !isempty(legend_parts)
+        println(io, "           ", join(legend_parts, " "))
+    end
+end
 
 end
