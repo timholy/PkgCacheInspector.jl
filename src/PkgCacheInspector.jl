@@ -228,13 +228,9 @@ end
 # count_internal_specializations is defined in MethodAnalysisExt when MethodAnalysis is loaded
 count_internal_specializations(::Any) = nothing
 
-"""
-    count_internal_methods(info::PkgCacheInfo) → Dict{Module,Int}
-
-Count the number of methods defined within each of the package's own modules.
-These are methods that belong to the modules stored in the package image,
-as opposed to external methods which extend functions from other modules.
-"""
+# Count the number of methods defined within each of the package's own modules.
+# These are methods that belong to the modules stored in the package image,
+# as opposed to external methods which extend functions from other modules.
 function count_internal_methods(info::PkgCacheInfo)
     method_counts = Dict{Module,Int}()
     for mod in info.modules
