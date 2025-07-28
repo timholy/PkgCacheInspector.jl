@@ -233,29 +233,10 @@ count_internal_specializations(::Any) = nothing
 # as opposed to external methods which extend functions from other modules.
 function count_internal_methods(info::PkgCacheInfo)
     method_counts = Dict{Module,Int}()
-    for mod in info.modules
-        count = 0
-        # Count methods defined in this module
-        for name in names(mod; all=true)
-            if isdefined(mod, name)
-                obj = getfield(mod, name)
-                if isa(obj, Function)
-                    for method in methods(obj)
-                        if method.module == mod
-                            count += 1
-                        end
-                    end
-                elseif isa(obj, Type) && isa(obj, DataType)
-                    # Count constructors
-                    for method in methods(obj)
-                        if method.module == mod
-                            count += 1
-                        end
-                    end
-                end
-            end
+    Base.visit(Core.GlobalMethods) do method
+        if method.module in info.modules
+            method_counts[method.module] = get(method_counts, method.module, 0) + 1
         end
-        method_counts[mod] = count
     end
     return method_counts
 end
