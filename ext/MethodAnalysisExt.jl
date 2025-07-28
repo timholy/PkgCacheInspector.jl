@@ -32,16 +32,11 @@ function PkgCacheInspector.count_internal_specializations(info::PkgCacheInfo)
 
     # Count method instances by their defining module
     for mi in all_mis
-        try
-            if isa(mi, Core.MethodInstance) && isa(mi.def, Method)
-                method_module = mi.def.module
-                if method_module in info.modules
-                    spec_counts[method_module] = get(spec_counts, method_module, 0) + 1
-                end
+        if isa(mi, Core.MethodInstance) && isa(mi.def, Method)
+            method_module = mi.def.module
+            if method_module in info.modules
+                spec_counts[method_module] = get(spec_counts, method_module, 0) + 1
             end
-        catch e
-            # Skip individual method instances that cause issues
-            continue
         end
     end
 
