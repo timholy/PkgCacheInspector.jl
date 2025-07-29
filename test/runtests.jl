@@ -15,6 +15,8 @@ module EmptyPkg end
     str = sprint(show, info)
     @test occursin("relocations", str) && occursin("new specializations", str) && occursin("targets", str)
     @test occursin("file size", str)
+    @test occursin("internal methods", str)
+    @test occursin("specializations of internal methods", str)
 
     mis = methodinstances(info)
     @test eltype(mis) === Core.MethodInstance

@@ -24,4 +24,23 @@ function MethodAnalysis.methodinstances(info::PkgCacheInfo)
     return mis
 end
 
+function PkgCacheInspector.count_internal_specializations(info::PkgCacheInfo)
+    spec_counts = Dict{Module,Int}()
+
+    # Get all method instances from the cache
+    all_mis = methodinstances(info)
+
+    # Count method instances by their defining module
+    for mi in all_mis
+        if isa(mi, Core.MethodInstance) && isa(mi.def, Method)
+            method_module = mi.def.module
+            if method_module in info.modules
+                spec_counts[method_module] = get(spec_counts, method_module, 0) + 1
+            end
+        end
+    end
+
+    return spec_counts
+end
+
 end
