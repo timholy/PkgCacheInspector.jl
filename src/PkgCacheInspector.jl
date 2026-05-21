@@ -17,6 +17,14 @@ _n(io, n) = printstyled(io, n; color=_COUNT_COLOR, bold=true)
 _mod(io, m) = printstyled(io, nameof(m); color=_MODULE_COLOR)
 _hdr(io, s) = printstyled(io, s; color=_HEADER_COLOR, bold=true)
 
+# Truncate `s` to fit the caller's terminal width (minus the printed indent).
+# Falls back to `s` unchanged on Julia versions without `Base.rtruncate`.
+function _truncate_for(io::IO, s::AbstractString, indent::Int)
+    isdefined(Base, :rtruncate) || return s
+    max_width = max(40, Base.displaysize(io)[2] - indent)
+    return Base.rtruncate(s, max_width)
+end
+
 using Base: PkgId, require_lock, assert_havelock, isvalid_cache_header, parse_cache_header, isvalid_file_crc,
             _tryrequire_from_serialized, find_all_in_cache_path, locate_package, stale_cachefile
 using Core: SimpleVector
@@ -128,18 +136,18 @@ struct PkgCacheInfo
         external callers. The information is therefore unavailable to PkgCacheInspector on
         those releases.
     """
-    external_methods::Vector{Any}
+    external_methods::Vector{Method}
     """
     The list of method specializations for methods defined within the package's own modules.
     These are specializations that were added during precompilation but belong to the package's own methods.
     """
-    internal_method_specializations::Vector{Any}
+    internal_method_specializations::Vector{Core.CodeInstance}
     """
     The list of novel specializations of external methods that were created during package precompilation.
     E.g., `get(::Dict{String,Float16}, ::String, ::Nothing)`: `Base` owns the method and all the types in
     this specialization, but might not have precompiled it until it was needed by a package.
     """
-    new_specializations::Vector{Any}
+    new_specializations::Vector{Core.CodeInstance}
     """
     Methods that gained new GC roots during precompilation, paired flat as
     `[method, roots, method, roots, …]`. This includes both internal and external methods.
@@ -169,13 +177,13 @@ struct PkgCacheInfo
     surface this list; in that case `count_internal_methods` falls back to walking the global
     method table.
     """
-    internal_methods::Vector{Any}
+    internal_methods::Vector{Method}
     """
     Verbose output mode for displaying method information.
     """
     verbose::Symbol
 end
-PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes(), [], [], :none)
+PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, Vector{Module}(modules), [], Method[], Core.CodeInstance[], Core.CodeInstance[], [], [], 0, PkgCacheSizes(), [], Method[], :none)
 
 # Calling `jl_restore_package_image_from_file` / `jl_restore_incremental` twice on the
 # same cache file in one session corrupts internal loader state and segfaults. Cache by
@@ -366,17 +374,15 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
         end
 
         sorted_modules = sort(collect(module_methods); by=x->length(x[2]), rev=true)
-        for (mod, methods) in sorted_modules
-            print(io, "    "); _mod(io, mod); print(io, " ("); _n(io, length(methods)); println(io, " methods):")
+        for (mod, ms) in sorted_modules
+            print(io, "    "); _mod(io, mod); print(io, " ("); _n(io, length(ms)); println(io, " methods):")
             # Render each Method via its own color-aware `show`, propagating caller's IO context.
-            method_lines = sort!([sprint(show, m; context=io) for m in methods])
+            method_lines = sort!([sprint(show, m; context=io) for m in ms])
             for line in method_lines
                 println(io, "      ", line)
             end
         end
     end
-
-
 
     if !isempty(info.new_specializations)
         print(io, "  "); _hdr(io, "New specializations of external methods")
@@ -396,14 +402,7 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
                         end
                         # Use Julia's compact method signature display (color-aware via io ctx).
                         signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
-                        # Truncate if rtruncate is available to avoid wrapping
-                        if isdefined(Base, :rtruncate)
-                            terminal_width = Base.displaysize(io)[2]
-                            indent_width = 8  # "      " prefix for each spec line
-                            max_width = max(40, terminal_width - indent_width)
-                            signature = Base.rtruncate(signature, max_width)
-                        end
-                        push!(module_specs[mod], signature)
+                        push!(module_specs[mod], _truncate_for(io, signature, 8))
                     end
                 end
             end
@@ -441,14 +440,7 @@ function show_verbose_internal_method_specializations(io::IO, info::PkgCacheInfo
                     end
                     # Use Julia's compact method signature display (color-aware via io ctx).
                     signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
-                    # Truncate if rtruncate is available to avoid wrapping
-                    if isdefined(Base, :rtruncate)
-                        terminal_width = Base.displaysize(io)[2]
-                        indent_width = 8  # "      " prefix for each spec line
-                        max_width = max(40, terminal_width - indent_width)
-                        signature = Base.rtruncate(signature, max_width)
-                    end
-                    push!(module_specs[mod], signature)
+                    push!(module_specs[mod], _truncate_for(io, signature, 8))
                 end
             end
         end
@@ -588,12 +580,14 @@ function Base.show(io::IO, info::PkgCacheInfo)
 end
 
 moduleof(m::Method) = m.module
-moduleof(m::Module) = m
 
 function count_module_specializations(new_specializations)
     modcount = Dict{Module,Int}()
     for ci in new_specializations
-        m = moduleof(ci.def.def)
+        isa(ci, Core.CodeInstance) || continue
+        mi = ci.def
+        isa(mi, Core.MethodInstance) && isa(mi.def, Method) || continue
+        m = moduleof(mi.def)
         modcount[m] = get(modcount, m, 0) + 1
     end
     return modcount
@@ -690,19 +684,19 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_ta
     return info
 end
 
-function info_cachefile(pkg::PkgId, path::String, verbose::Symbol=:none)
+function info_cachefile(pkg::PkgId, path::String; verbose::Symbol=:none)
     return @lock require_lock begin
         local depmodnames, image_targets
         io = open(path, "r")
         try
             # isvalid_cache_header returns checksum id or zero
-            isvalid_cache_header(io) == 0 && return ArgumentError("Invalid header in cache file $path.")
+            isvalid_cache_header(io) == 0 && throw(ArgumentError("Invalid header in cache file $path."))
             header = parse_cache_header(io, path)
             depmodnames = header[3]
             # Position of `clone_targets` differs between Julia versions; locate it by type.
             clone_targets = header[findfirst(x -> x isa Vector{UInt8}, header)::Int]
             image_targets = Any[Base.parse_image_targets(clone_targets)...]
-            isvalid_file_crc(io) || return ArgumentError("Invalid checksum in cache file $path.")
+            isvalid_file_crc(io) || throw(ArgumentError("Invalid checksum in cache file $path."))
         finally
             close(io)
         end
@@ -726,7 +720,7 @@ function info_cachefile(pkg::PkgId, path::String, verbose::Symbol=:none)
     end
 end
 
-function info_cachefile(pkg::PkgId, verbose::Symbol=:none)
+function info_cachefile(pkg::PkgId; verbose::Symbol=:none)
     cachefiles = find_all_in_cache_path(pkg)
     isempty(cachefiles) && error(pkg, " has not yet been precompiled for julia ", Base.VERSION)
     # On Julia >= 1.13 use `PkgLoadSpec` so the cache's recorded syntax version is checked
@@ -741,7 +735,7 @@ function info_cachefile(pkg::PkgId, verbose::Symbol=:none)
         stale_cachefile(pkgspec, cf) !== true
     end
     idx === nothing && error("all cache files for ", pkg, " are stale, please precompile")
-    return info_cachefile(pkg, cachefiles[idx], verbose)
+    return info_cachefile(pkg, cachefiles[idx]; verbose)
 end
 
 """
@@ -762,11 +756,12 @@ After calling `info_cachefile("MyPkg")` you can also execute `using MyPkg` to ma
 `info_cachefile` available for use. This can allow you to load `cf`s for multiple packages into the same session
 for deeper analysis.
 
-!!! warn
+!!! warning
     Your session may be corrupted if you run `info_cachefile` for a package that had
     already been loaded into your session. Restarting with a clean session and using `info_cachefile`
     before otherwise loading the package is recommended.
 """
-info_cachefile(pkgname::AbstractString; verbose::Symbol=:none) = info_cachefile(Base.identify_package(pkgname), verbose)
+info_cachefile(pkgname::AbstractString; verbose::Symbol=:none) = info_cachefile(Base.identify_package(pkgname); verbose)
+info_cachefile(pkg::PkgId, path::AbstractString; verbose::Symbol=:none) = info_cachefile(pkg, String(path), verbose)
 
 end
