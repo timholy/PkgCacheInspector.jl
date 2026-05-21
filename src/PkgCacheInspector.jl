@@ -177,6 +177,12 @@ struct PkgCacheInfo
 end
 PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes(), [], [], :none)
 
+# Calling `jl_restore_package_image_from_file` / `jl_restore_incremental` twice on the
+# same cache file in one session corrupts internal loader state and segfaults. Cache by
+# the resolved cachefile path and return the previously built `PkgCacheInfo` (with the
+# new `verbose` setting) on repeat calls.
+const _INFO_CACHE = Dict{String, PkgCacheInfo}()
+
 """
     _unpack_restored_sv(sv) -> NamedTuple
 
@@ -644,6 +650,17 @@ function count_internal_methods(info::PkgCacheInfo)
 end
 
 function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false, verbose::Symbol=:none)
+    cache_key = try realpath(path) catch; path end
+    cached = get(_INFO_CACHE, cache_key, nothing)
+    if cached !== nothing
+        @warn "`info_cachefile` already called for this cache file; returning cached result. Reloading the same pkgimage in one session would corrupt the runtime." path
+        return cached.verbose === verbose ? cached :
+            PkgCacheInfo(cached.cachefile, cached.modules, cached.init_order,
+                         cached.external_methods, cached.internal_method_specializations,
+                         cached.new_specializations, cached.new_method_roots,
+                         cached.edges, cached.filesize, cached.cachesizes,
+                         cached.image_targets, cached.internal_methods, verbose)
+    end
     if isocache
         sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint, Cstring, Cint), path, depmods, true, pkg.name, false)
     else
@@ -669,6 +686,7 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_ta
                         Any[], filesize(path),
                         PkgCacheSizes(parts.cachesizes_raw...),
                         image_targets, parts.internal_methods, verbose)
+    _INFO_CACHE[cache_key] = info
     return info
 end
 

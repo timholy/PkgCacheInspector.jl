@@ -22,6 +22,13 @@ module EmptyPkg end
     @test eltype(mis) === Core.MethodInstance
     @test length(mis) > 100
 
+    # Repeated info_cachefile on the same package returns the cached result with a warning
+    # (loading the same pkgimage twice in one session segfaults the runtime).
+    info_again = @test_logs (:warn, r"already called"i) info_cachefile("Colors", verbose = :none)
+    @test isa(info_again, PkgCacheInfo)
+    @test info_again.cachefile == info.cachefile
+    @test info_again.verbose === :none
+
     # Empty pkgimages do not cause issues
     info = PkgCacheInfo("EmptyPkg.so", [EmptyPkg])
     str = sprint(show, info)
