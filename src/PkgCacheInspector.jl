@@ -110,6 +110,13 @@ struct PkgCacheInfo
     """
     The list of methods added to external modules. E.g., `Base.push!(v::MyNewVector, x)`.
     These are methods that extend functions owned by other modules.
+
+    !!! note
+        On Julia 1.13 through Julia 1.14.0-DEV (prior to the upstream fix that restores
+        `extext_methods` to the inspector svec), this list is always empty: the underlying
+        `TypeMapEntry` array is populated by the loader but discarded before it reaches
+        external callers. The information is therefore unavailable to PkgCacheInspector on
+        those releases.
     """
     external_methods::Vector{Any}
     """
@@ -124,8 +131,9 @@ struct PkgCacheInfo
     """
     new_specializations::Vector{Any}
     """
-    New GC roots added to external methods. These are an important but internal detail of how type-inferred code
-    is compressed for serialization.
+    Methods that gained new GC roots during precompilation, paired flat as
+    `[method, roots, method, roots, …]`. This includes both internal and external methods.
+    These roots are an internal detail of how type-inferred code is compressed for serialization.
     """
     new_method_roots::Vector{Any}
     """
@@ -146,11 +154,18 @@ struct PkgCacheInfo
     """
     image_targets::Vector{Any}
     """
+    Methods defined by this package image as extracted directly from the `internal_methods`
+    array returned by the loader (Julia ≥ 1.13). Empty on Julia 1.12 where the loader does not
+    surface this list; in that case `count_internal_methods` falls back to walking the global
+    method table.
+    """
+    internal_methods::Vector{Any}
+    """
     Verbose output mode for displaying method information.
     """
     verbose::Symbol
 end
-PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes(), [], :none)
+PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modules, [], [], [], [], [], [], 0, PkgCacheSizes(), [], [], :none)
 
 """
     _unpack_restored_sv(sv) -> NamedTuple
@@ -158,13 +173,21 @@ PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, modul
 Unpack the SimpleVector returned by `jl_restore_incremental`/`jl_restore_package_image_from_file`
 (with `completeinfo=true`), normalizing across Julia versions.
 
-Julia 1.12 returns a 7-element svec: `(restored, init_order, edges, ext_edges, extext_methods,
-method_roots_list, cachesizes_sv)`.
+Four layouts are supported:
 
-Julia 1.13+ (and master) returns a 5-element svec: `(restored, init_order, internal_methods,
-method_roots_list, cachesizes_sv)` where `internal_methods` is a flat heterogeneous list mixing
-`Core.TypeMapEntry` (the old `extext_methods`), `Method` (new internal methods), and
-`Core.CodeInstance` (the old `edges` and `ext_edges` merged).
+- Julia 1.11 (8-elem): `(restored, init_order, extext_methods, new_ext_cis,
+  method_roots_list, ext_targets, edges, cachesizes_sv)`. `ext_targets` is unused here.
+- Julia 1.12 (7-elem): `(restored, init_order, edges, ext_edges, extext_methods,
+  method_roots_list, cachesizes_sv)`.
+- Julia 1.13 .. 1.14.0-DEV pre-fix (5-elem): `(restored, init_order, internal_methods,
+  method_roots_list, cachesizes_sv)` where `internal_methods` mixes `Method` and `CodeInstance`.
+  On these releases the `extext_methods` (TypeMapEntries) and `new_ext_cis` arrays are
+  populated inside the loader but **dropped** before being returned, so `extext_entries` is
+  always empty here. See the JuliaLang/julia source `staticdata.c` for the fix.
+- Post-fix master (7-elem): `(restored, init_order, internal_methods, extext_methods,
+  new_ext_cis, method_roots_list, cachesizes_sv)`. Distinguished from the 1.12 7-elem
+  layout by `VERSION` (the layouts are not type-distinguishable when their arrays are
+  empty).
 """
 function _unpack_restored_sv(sv)
     n = length(sv)
@@ -172,23 +195,44 @@ function _unpack_restored_sv(sv)
     init_order = sv[2]
     code_instances = Core.CodeInstance[]
     extext_entries = Core.TypeMapEntry[]
-    if n == 7
-        # Julia 1.12 layout
+    internal_methods = Method[]
+    if n == 8
+        # Julia 1.11 layout: extext_methods, new_ext_cis, method_roots, ext_targets, edges, cachesizes
+        for x in sv[3]; isa(x, Core.TypeMapEntry) && push!(extext_entries, x); end
+        for x in sv[4]; isa(x, Core.CodeInstance) && push!(code_instances, x); end
+        for x in sv[7]; isa(x, Core.CodeInstance) && push!(code_instances, x); end
+        method_roots_list = sv[5]
+        cachesizes_raw = sv[8]
+    elseif n == 7 && VERSION < v"1.13-"
+        # Julia 1.12 layout: edges, ext_edges, extext_methods
         for x in sv[3]; isa(x, Core.CodeInstance) && push!(code_instances, x); end
         for x in sv[4]; isa(x, Core.CodeInstance) && push!(code_instances, x); end
         for x in sv[5]; isa(x, Core.TypeMapEntry) && push!(extext_entries, x); end
         method_roots_list = sv[6]
         cachesizes_raw = sv[7]
-    elseif n == 5
-        # Julia 1.13+/master layout
+    elseif n == 7
+        # Post-fix master layout: internal_methods, extext_methods, new_ext_cis
         for x in sv[3]
             if isa(x, Core.CodeInstance)
                 push!(code_instances, x)
+            elseif isa(x, Method)
+                push!(internal_methods, x)
+            end
+        end
+        for x in sv[4]; isa(x, Core.TypeMapEntry) && push!(extext_entries, x); end
+        for x in sv[5]; isa(x, Core.CodeInstance) && push!(code_instances, x); end
+        method_roots_list = sv[6]
+        cachesizes_raw = sv[7]
+    elseif n == 5
+        # Julia 1.13 .. 1.14.0-DEV pre-fix layout (buggy: extext_entries is unavailable).
+        for x in sv[3]
+            if isa(x, Core.CodeInstance)
+                push!(code_instances, x)
+            elseif isa(x, Method)
+                push!(internal_methods, x)
             elseif isa(x, Core.TypeMapEntry)
                 push!(extext_entries, x)
             end
-            # Methods present in this list are also discoverable via `Core.methodtable`,
-            # so they are accounted for by `count_internal_methods`.
         end
         method_roots_list = sv[4]
         cachesizes_raw = sv[5]
@@ -196,7 +240,7 @@ function _unpack_restored_sv(sv)
         error("Unexpected SimpleVector layout (length $n) returned by Julia $(VERSION); ",
               "PkgCacheInspector needs updating.")
     end
-    return (; modules, init_order, code_instances, extext_entries,
+    return (; modules, init_order, code_instances, extext_entries, internal_methods,
               method_roots_list, cachesizes_raw)
 end
 
@@ -298,12 +342,14 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
     # Show truly external methods (extension methods defined for functions in other modules)
     if !isempty(info.external_methods)
         println(io, "  External methods (extending functions from other modules) (", length(info.external_methods), " total):")
-        # Group unique method definitions by the module that owns the function being extended
+        # Group unique method definitions by the module that owns the function being extended.
+        # `method.module` is the defining (worklist) module — uninformative for extension methods,
+        # which by definition all live in the worklist module. Use the function-owner module instead.
         external_method_defs = Set{Method}(m for m in info.external_methods if isa(m, Method))
 
         module_methods = Dict{Module, Vector{Method}}()
         for method in external_method_defs
-            mod = method.module
+            mod = _extension_owner_module(method)
             if !haskey(module_methods, mod)
                 module_methods[mod] = Method[]
             end
@@ -517,7 +563,7 @@ function Base.show(io::IO, info::PkgCacheInfo)
         show_verbose_external_methods(io, info)
     end
 
-    !isempty(info.new_method_roots) && println(io, "  ", length(info.new_method_roots) ÷ 2, " external methods with new roots")
+    !isempty(info.new_method_roots) && println(io, "  ", length(info.new_method_roots) ÷ 2, " methods with new roots")
 
     println(io, "  ", rpad("file size: ", cache_displaynames_l+2), info.filesize, " (", Base.format_bytes(info.filesize),")")
     show(IOContext(io, :indent => 2), info.cachesizes)
@@ -542,14 +588,45 @@ end
 # count_internal_specializations is defined in MethodAnalysisExt when MethodAnalysis is loaded
 count_internal_specializations(::Any) = nothing
 
+# For a method extending an externally-owned function, recover the module that owns the
+# function. The first signature parameter is `Type{typeof(f)}` for normal calls, or the
+# functor's own type for callable-object methods.
+function _extension_owner_module(method::Method)
+    sig = Base.unwrap_unionall(method.sig)
+    isa(sig, DataType) || return method.module
+    isempty(sig.parameters) && return method.module
+    t1 = sig.parameters[1]
+    if isa(t1, DataType) && t1.name === Type.body.name && !isempty(t1.parameters)
+        ft = t1.parameters[1]
+        isa(ft, DataType) && return ft.name.module
+    elseif isa(t1, DataType)
+        return t1.name.module
+    end
+    return method.module
+end
+
 # `Core.GlobalMethods` was renamed to `Core.methodtable` in Julia 1.12 (#59158).
-const _GLOBAL_METHODS = isdefined(Core, :methodtable) ? Core.methodtable : getfield(Core, :GlobalMethods)
+# On Julia 1.11 neither exists publicly; the global walk fallback is simply unavailable
+# there (count_internal_methods will rely on info.internal_methods when populated).
+const _GLOBAL_METHODS = isdefined(Core, :methodtable) ? Core.methodtable :
+                       isdefined(Core, :GlobalMethods) ? getfield(Core, :GlobalMethods) :
+                       nothing
 
 # Count the number of methods defined within each of the package's own modules.
-# These are methods that belong to the modules stored in the package image,
-# as opposed to external methods which extend functions from other modules.
+# On Julia >= 1.13 the loader hands us the exact `Method` list for this pkgimage in
+# `info.internal_methods`; use it for an accurate per-package count. On Julia 1.12 (and as a
+# safety fallback) walk the global method table and filter by module — note this over-counts
+# in long sessions because it includes methods registered before `info_cachefile` was called.
 function count_internal_methods(info::PkgCacheInfo)
     method_counts = Dict{Module,Int}()
+    if !isempty(info.internal_methods)
+        for m in info.internal_methods
+            isa(m, Method) || continue
+            method_counts[m.module] = get(method_counts, m.module, 0) + 1
+        end
+        return method_counts
+    end
+    _GLOBAL_METHODS === nothing && return method_counts
     Base.visit(_GLOBAL_METHODS) do method
         if method.module in info.modules
             method_counts[method.module] = get(method_counts, method.module, 0) + 1
@@ -583,7 +660,7 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_ta
                         new_specializations, parts.method_roots_list,
                         Any[], filesize(path),
                         PkgCacheSizes(parts.cachesizes_raw...),
-                        image_targets, verbose)
+                        image_targets, parts.internal_methods, verbose)
     return info
 end
 
@@ -613,8 +690,10 @@ function info_cachefile(pkg::PkgId, path::String, verbose::Symbol=:none)
             end
             depmods[i] = dep
         end
-        # then load the file
-        if isdefined(Base, :ocachefile_from_cachefile)
+        # then load the file. Only use the ocache (native-code) path when the cache actually
+        # has clone targets recorded; otherwise the `.so`/`.dylib` may not exist (notably on
+        # Julia 1.11 when precompilation was performed without native code generation).
+        if !isempty(image_targets) && isdefined(Base, :ocachefile_from_cachefile)
             return info_cachefile(pkg, Base.ocachefile_from_cachefile(path), depmods, image_targets, true, verbose)
         end
         info_cachefile(pkg, path, depmods, image_targets, false, verbose)
