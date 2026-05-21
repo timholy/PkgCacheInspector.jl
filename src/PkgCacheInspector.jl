@@ -124,8 +124,13 @@ struct PkgCacheInfo
     """
     init_order::Vector{Any}
     """
-    The list of methods added to external modules. E.g., `Base.push!(v::MyNewVector, x)`.
-    These are methods that extend functions owned by other modules.
+    Every method defined by this pkgimage that must be re-installed into the global
+    method table at load time via `jl_method_table_activate` (the underlying
+    `TypeMapEntry`s live in `extext_entries`). On modern Julia with a single
+    global `jl_method_table`, this includes **all** worklist-defined methods, not only
+    methods extending externally-owned functions — the historic "extext" / "external"
+    name predates the single-global-mt design. Use [`extending_external_methods`](@ref)
+    to filter to the true "extending external" subset.
 
     !!! note
         On Julia 1.13 through Julia 1.14.0-DEV (prior to the upstream fix that restores
@@ -170,10 +175,13 @@ struct PkgCacheInfo
     """
     image_targets::Vector{Any}
     """
-    Methods defined by this package image as extracted directly from the `internal_methods`
-    array returned by the loader (Julia ≥ 1.13). Empty on Julia 1.12 where the loader does not
-    surface this list; in that case `count_internal_methods` falls back to walking the global
-    method table.
+    Methods reached by the loader's fixup walk on this pkgimage (Julia ≥ 1.13). These are
+    the `Method` objects whose `primary_world` field is bumped by `jl_activate_methods`;
+    on the current single-global-`jl_method_table` design they are the same `Method`s
+    that `external_methods` wraps in `TypeMapEntry`s, just enumerated as bare
+    `Method` objects for a different load-time purpose. Empty on Julia 1.12 where the
+    loader does not surface this list; in that case `count_internal_methods` falls back
+    to walking the global method table.
     """
     internal_methods::Vector{Method}
     """
@@ -352,14 +360,13 @@ end
 Display detailed information about external methods when verbose mode is enabled.
 """
 function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
-    # Show truly external methods (extension methods defined for functions in other modules)
-    if !isempty(info.external_methods)
-        print(io, "  "); _header(io, "External methods (extending functions from other modules)")
-        print(io, " ("); _count(io, length(info.external_methods)); println(io, " total):")
-        # Group unique method definitions by the module that owns the function being extended.
-        # `method.module` is the defining (worklist) module — uninformative for extension methods,
-        # which by definition all live in the worklist module. Use the function-owner module instead.
-        external_method_defs = Set{Method}(m for m in info.external_methods if isa(m, Method))
+    # Show truly external methods (methods extending functions owned by other modules).
+    ext_exts = extending_external_methods(info)
+    if !isempty(ext_exts)
+        print(io, "  "); _header(io, "Methods extending external functions")
+        print(io, " ("); _count(io, length(ext_exts)); println(io, " total):")
+        # Group by the module that owns the function being extended.
+        external_method_defs = Set{Method}(ext_exts)
 
         module_methods = Dict{Module, Vector{Method}}()
         for method in external_method_defs
@@ -528,9 +535,13 @@ function Base.show(io::IO, info::PkgCacheInfo)
         end
     end
 
-    # External methods: summary lines, plus detail in verbose mode.
-    if !isempty(info.external_methods)
-        print(io, "  "); _count(io, length(info.external_methods)); println(io, " external methods")
+    # External methods: show the truly-external subset (methods extending functions
+    # owned by modules outside this pkgimage). On post-#58131 Julia (single global
+    # jl_method_table) info.external_methods contains *all* worklist methods, so the
+    # raw count would duplicate the "internal methods" line above.
+    ext_exts = extending_external_methods(info)
+    if !isempty(ext_exts)
+        print(io, "  "); _count(io, length(ext_exts)); println(io, " methods extending external functions")
     end
     if !isempty(info.new_specializations)
         print(io, "  "); _count(io, length(info.new_specializations)); print(io, " new specializations of external methods ")
@@ -632,6 +643,35 @@ function _with_verbose(cached::PkgCacheInfo, verbose::Symbol)
 end
 
 _cache_key(path) = try realpath(path) catch; path end
+
+"""
+    extending_external_methods(info::PkgCacheInfo) -> Vector{Method}
+
+Return the subset of [`info.external_methods`](@ref PkgCacheInfo) whose specialized
+function is owned by a module **outside** this pkgimage's worklist — i.e., the true
+"extending external functions" subset (e.g., a package's `Base.show(::IO, ::MyType)`
+method). Filters by the module of the function-type, obtained from
+`Base.unwrap_unionall(m.sig).parameters[1].name.module`.
+
+Methods whose signature does not begin with a singleton function type (e.g. constructors
+for builtin types, callable struct instances) are conservatively classified as extending
+external when their containing type's name module is outside the worklist.
+"""
+function extending_external_methods(info::PkgCacheInfo)
+    worklist = Set{Module}(info.modules)
+    out = Method[]
+    for m in info.external_methods
+        st = Base.unwrap_unionall(m.sig)
+        isa(st, DataType) || continue
+        isempty(st.parameters) && continue
+        ft = st.parameters[1]
+        ft = isa(ft, UnionAll) ? Base.unwrap_unionall(ft) : ft
+        isa(ft, DataType) || continue
+        isdefined(ft, :name) || continue
+        ft.name.module in worklist || push!(out, m)
+    end
+    return out
+end
 
 function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false, verbose::Symbol=:none)
     cache_key = _cache_key(path)

@@ -1,4 +1,5 @@
 using PkgCacheInspector
+using PkgCacheInspector: extending_external_methods
 using MethodAnalysis
 using Test
 using Pkg
@@ -42,4 +43,15 @@ end
     str = sprint(show, info)
     @test occursin(r"modules: .*EmptyPkg\]", str)
     @test occursin(r"file size: +0 \(0 bytes\)", str)
+
+    # extending_external_methods returns a subset of external_methods, filtered to those
+    # whose function-type module is outside the worklist.
+    colors_info = info_cachefile("Colors", verbose = :none)
+    eem = extending_external_methods(colors_info)
+    @test eem isa Vector{Method}
+    @test issubset(Set(eem), Set(colors_info.external_methods))
+    worklist = Set(colors_info.modules)
+    @test all(m -> !(Base.unwrap_unionall(m.sig).parameters[1] isa DataType &&
+                     Base.unwrap_unionall(m.sig).parameters[1].name.module in worklist), eem)
+    @test isempty(extending_external_methods(empty_info("EmptyPkg.so", [EmptyPkg])))
 end

@@ -20,4 +20,5 @@ for understanding more about the information returned by [`info_cachefile`](@ref
 info_cachefile
 PkgCacheInfo
 PkgCacheSizes
+extending_external_methods
 ```
