@@ -10,7 +10,7 @@ Pkg.precompile()
 module EmptyPkg end
 
 @testset "PkgCacheInspector.jl" begin
-    info = info_cachefile("Colors")
+    info = info_cachefile("Colors", verbose = :all)
     @test isa(info, PkgCacheInfo)
     str = sprint(show, info)
     @test occursin("relocations", str) && occursin("new specializations", str) && occursin("targets", str)
