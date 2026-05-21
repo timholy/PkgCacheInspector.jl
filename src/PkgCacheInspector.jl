@@ -271,63 +271,52 @@ end
 Display detailed information about internal methods when verbose mode is enabled.
 """
 function show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
-    internal_methods = count_internal_methods(info)
-    total_internal = sum(values(internal_methods))
-
-    if total_internal > 0
-        println(io, "  Internal methods (", total_internal, " total):")
-        sorted_internal = sort(collect(internal_methods); by=last, rev=true)
-        for (mod, count) in sorted_internal
-            println(io, "    ", nameof(mod), ": ", count, " methods")
-            # Show individual methods for each module
+    # Collect a *deduplicated* set of internal `Method`s. Prefer the exact list from
+    # `info.internal_methods` (populated on Julia ≥ 1.13); fall back to walking each
+    # module's bindings on older Julias. Walking via `names(mod; all=true)` and listing
+    # `methods(getfield(mod, name))` per binding produces duplicates whenever multiple
+    # gensym'd bindings (e.g. `var"#12#val"`) alias the same function — collecting into a
+    # `Set{Method}` removes that double-counting.
+    methods_by_module = Dict{Module, Set{Method}}()
+    if !isempty(info.internal_methods)
+        for m in info.internal_methods
+            isa(m, Method) || continue
+            push!(get!(Set{Method}, methods_by_module, m.module), m)
+        end
+    else
+        for mod in info.modules
             for name in names(mod; all=true)
-                if isdefined(mod, name)
-                    obj = getfield(mod, name)
-                    if isa(obj, Function)
-                        method_list = Method[]
-                        for method in methods(obj)
-                            if method.module == mod
-                                push!(method_list, method)
-                            end
-                        end
-                        if !isempty(method_list)
-                            println(io, "      ", name, " (", length(method_list), " methods)")
-                            # Capture method output in buffer and sort
-                            method_buffer = IOBuffer()
-                            method_io = IOContext(method_buffer, stdout)
-                            for method in method_list
-                                println(method_io, "        ", method)
-                            end
-                            method_lines = split(String(take!(method_buffer)), '\n', keepempty=false)
-                            sort!(method_lines)
-                            for line in method_lines
-                                println(io, line)
-                            end
-                        end
-                    elseif isa(obj, Type) && isa(obj, DataType)
-                        # Show constructors
-                        method_list = Method[]
-                        for method in methods(obj)
-                            if method.module == mod
-                                push!(method_list, method)
-                            end
-                        end
-                        if !isempty(method_list)
-                            println(io, "      ", name, " (", length(method_list), " constructors)")
-                            # Capture constructor output in buffer and sort
-                            constructor_buffer = IOBuffer()
-                            constructor_io = IOContext(constructor_buffer, stdout)
-                            for method in method_list
-                                println(constructor_io, "        ", method)
-                            end
-                            constructor_lines = split(String(take!(constructor_buffer)), '\n', keepempty=false)
-                            sort!(constructor_lines)
-                            for line in constructor_lines
-                                println(io, line)
-                            end
-                        end
+                isdefined(mod, name) || continue
+                obj = getfield(mod, name)
+                if isa(obj, Function) || (isa(obj, Type) && isa(obj, DataType))
+                    for method in methods(obj)
+                        method.module == mod || continue
+                        push!(get!(Set{Method}, methods_by_module, mod), method)
                     end
                 end
+            end
+        end
+    end
+
+    total_internal = sum(length, values(methods_by_module); init=0)
+    total_internal == 0 && return
+
+    println(io, "  Internal methods (", total_internal, " total):")
+    sorted_modules = sort(collect(methods_by_module); by=x->length(x[2]), rev=true)
+    for (mod, mset) in sorted_modules
+        println(io, "    ", nameof(mod), ": ", length(mset), " methods")
+        # Group by the function the Method belongs to (using `method.name`, the symbol of
+        # the function being defined — independent of which binding aliases reference it).
+        by_function = Dict{Symbol, Vector{Method}}()
+        for m in mset
+            push!(get!(Vector{Method}, by_function, m.name), m)
+        end
+        for fname in sort!(collect(keys(by_function)))
+            ms = by_function[fname]
+            println(io, "      ", fname, " (", length(ms), " methods)")
+            method_lines = sort!([sprint(print, m) for m in ms])
+            for line in method_lines
+                println(io, "        ", line)
             end
         end
     end
