@@ -25,23 +25,22 @@ function _truncate_for(io::IO, s::AbstractString, indent::Int)
     return Base.rtruncate(s, max_width)
 end
 
-using Base: PkgId, require_lock, assert_havelock, isvalid_cache_header, parse_cache_header, isvalid_file_crc,
+using Base: PkgId, require_lock, isvalid_cache_header, parse_cache_header, isvalid_file_crc,
             _tryrequire_from_serialized, find_all_in_cache_path, locate_package, stale_cachefile
-using Core: SimpleVector
 
 """
 $(TYPEDEF)
 
 Stores the sizes of different "sections" of the pkgimage. The main section is the package image itself.
-However, reconstructing a pkgimage for use requires auxillary data, like the addresses of internal
+However, reconstructing a pkgimage for use requires auxiliary data, like the addresses of internal
 pointers that need to be modified to account for the actual base address into which the
-pkgimage was loaded. Each form of auxillary data gets stored in distinct sections.
+pkgimage was loaded. Each form of auxiliary data gets stored in distinct sections.
 
 $(FIELDS)
 """
 struct PkgCacheSizes
     """
-    Size of the image. This is the portion of the file that gets returns by `info_cachefile`.
+    Size of the image. This is the portion of the file that gets returned by `info_cachefile`.
     """
     sysdata::Int
     """
@@ -390,22 +389,13 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
         # Group by module for better organization
         module_specs = Dict{Module, Vector{String}}()
         for spec in info.new_specializations
-            if isa(spec, Core.CodeInstance) && isa(spec.def, Core.MethodInstance)
-                mi = spec.def
-                if isa(mi.def, Method)
-                    method = mi.def
-                    mod = method.module
-                    # Only include truly external methods here
-                    if mod ∉ info.modules
-                        if !haskey(module_specs, mod)
-                            module_specs[mod] = String[]
-                        end
-                        # Use Julia's compact method signature display (color-aware via io ctx).
-                        signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
-                        push!(module_specs[mod], _truncate_for(io, signature, 8))
-                    end
-                end
-            end
+            mi = spec.def
+            isa(mi, Core.MethodInstance) && isa(mi.def, Method) || continue
+            mod = mi.def.module
+            specs = get!(() -> String[], module_specs, mod)
+            # Use Julia's compact method signature display (color-aware via io ctx).
+            signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
+            push!(specs, _truncate_for(io, signature, 8))
         end
 
         sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
@@ -430,19 +420,13 @@ function show_verbose_internal_method_specializations(io::IO, info::PkgCacheInfo
         # Group by module for better organization
         module_specs = Dict{Module, Vector{String}}()
         for ci in info.internal_method_specializations
-            if isa(ci, Core.CodeInstance) && isa(ci.def, Core.MethodInstance)
-                mi = ci.def
-                if isa(mi.def, Method)
-                    method = mi.def
-                    mod = method.module
-                    if !haskey(module_specs, mod)
-                        module_specs[mod] = String[]
-                    end
-                    # Use Julia's compact method signature display (color-aware via io ctx).
-                    signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
-                    push!(module_specs[mod], _truncate_for(io, signature, 8))
-                end
-            end
+            mi = ci.def
+            isa(mi, Core.MethodInstance) && isa(mi.def, Method) || continue
+            mod = mi.def.module
+            specs = get!(() -> String[], module_specs, mod)
+            # Use Julia's compact method signature display (color-aware via io ctx).
+            signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
+            push!(specs, _truncate_for(io, signature, 8))
         end
 
         sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
@@ -468,14 +452,10 @@ function Base.show(io::IO, info::PkgCacheInfo)
     # Count internal method specializations from the filtered list
     internal_method_spec_counts = Dict{Module,Int}()
     for ci in info.internal_method_specializations
-        if isa(ci, Core.CodeInstance) && isa(ci.def, Core.MethodInstance)
-            mi = ci.def
-            if isa(mi.def, Method)
-                method = mi.def
-                mod = method.module
-                internal_method_spec_counts[mod] = get(internal_method_spec_counts, mod, 0) + 1
-            end
-        end
+        mi = ci.def
+        isa(mi, Core.MethodInstance) && isa(mi.def, Method) || continue
+        mod = mi.def.module
+        internal_method_spec_counts[mod] = get(internal_method_spec_counts, mod, 0) + 1
     end
     internal_method_spec_sorted = sort(collect(internal_method_spec_counts); by=last, rev=true)
     total_internal_method_specs = sum(last, internal_method_spec_sorted; init=0)
@@ -643,17 +623,24 @@ function count_internal_methods(info::PkgCacheInfo)
     return method_counts
 end
 
+# Build a fresh `PkgCacheInfo` from a cached one, swapping in a new `verbose` mode.
+function _with_verbose(cached::PkgCacheInfo, verbose::Symbol)
+    cached.verbose === verbose && return cached
+    return PkgCacheInfo(cached.cachefile, cached.modules, cached.init_order,
+                        cached.external_methods, cached.internal_method_specializations,
+                        cached.new_specializations, cached.new_method_roots,
+                        cached.edges, cached.filesize, cached.cachesizes,
+                        cached.image_targets, cached.internal_methods, verbose)
+end
+
+_cache_key(path) = try realpath(path) catch; path end
+
 function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_targets::Vector{Any}, isocache::Bool=false, verbose::Symbol=:none)
-    cache_key = try realpath(path) catch; path end
+    cache_key = _cache_key(path)
     cached = get(_INFO_CACHE, cache_key, nothing)
     if cached !== nothing
         @warn "`info_cachefile` already called for this cache file; returning cached result. Reloading the same pkgimage in one session would corrupt the runtime." path
-        return cached.verbose === verbose ? cached :
-            PkgCacheInfo(cached.cachefile, cached.modules, cached.init_order,
-                         cached.external_methods, cached.internal_method_specializations,
-                         cached.new_specializations, cached.new_method_roots,
-                         cached.edges, cached.filesize, cached.cachesizes,
-                         cached.image_targets, cached.internal_methods, verbose)
+        return _with_verbose(cached, verbose)
     end
     if isocache
         sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint, Cstring, Cint), path, depmods, true, pkg.name, false)
@@ -700,6 +687,22 @@ function info_cachefile(pkg::PkgId, path::String; verbose::Symbol=:none)
         finally
             close(io)
         end
+        # Determine the actual file `jl_restore_*` will load. Only use the ocache (native-code)
+        # path when the cache actually has clone targets recorded; otherwise the `.so`/`.dylib`
+        # may not exist (notably on Julia 1.11 when precompilation was done without native code).
+        load_path, isocache = if !isempty(image_targets) && isdefined(Base, :ocachefile_from_cachefile)
+            Base.ocachefile_from_cachefile(path), true
+        else
+            path, false
+        end
+        # Fast path: same cache file already inspected this session. Avoids reloading deps and
+        # the segfault-prone second `jl_restore_*` call. Keyed by the resolved load path so all
+        # entry-point variants (.ji vs .so) hit the same entry.
+        cached = get(_INFO_CACHE, _cache_key(load_path), nothing)
+        if cached !== nothing
+            @warn "`info_cachefile` already called for this cache file; returning cached result. Reloading the same pkgimage in one session would corrupt the runtime." path
+            return _with_verbose(cached, verbose)
+        end
         ndeps = length(depmodnames)
         depmods = Vector{Any}(undef, ndeps)
         for i in 1:ndeps
@@ -710,13 +713,7 @@ function info_cachefile(pkg::PkgId, path::String; verbose::Symbol=:none)
             end
             depmods[i] = dep
         end
-        # then load the file. Only use the ocache (native-code) path when the cache actually
-        # has clone targets recorded; otherwise the `.so`/`.dylib` may not exist (notably on
-        # Julia 1.11 when precompilation was performed without native code generation).
-        if !isempty(image_targets) && isdefined(Base, :ocachefile_from_cachefile)
-            return info_cachefile(pkg, Base.ocachefile_from_cachefile(path), depmods, image_targets, true, verbose)
-        end
-        info_cachefile(pkg, path, depmods, image_targets, false, verbose)
+        info_cachefile(pkg, load_path, depmods, image_targets, isocache, verbose)
     end
 end
 
