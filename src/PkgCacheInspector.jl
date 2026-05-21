@@ -13,9 +13,9 @@ const _MODULE_COLOR   = :light_blue    # module names in groupings/summaries
 const _COUNT_COLOR    = :light_yellow  # numeric counts
 const _FUNCTION_COLOR = :light_magenta # function-name grouping rows
 
-_n(io, n) = printstyled(io, n; color=_COUNT_COLOR, bold=true)
-_mod(io, m) = printstyled(io, nameof(m); color=_MODULE_COLOR)
-_hdr(io, s) = printstyled(io, s; color=_HEADER_COLOR, bold=true)
+_count(io, n) = printstyled(io, n; color=_COUNT_COLOR, bold=true)
+_modname(io, m) = printstyled(io, nameof(m); color=_MODULE_COLOR)
+_header(io, s) = printstyled(io, s; color=_HEADER_COLOR, bold=true)
 
 # Truncate `s` to fit the caller's terminal width (minus the printed indent).
 # Falls back to `s` unchanged on Julia versions without `Base.rtruncate`.
@@ -69,7 +69,6 @@ struct PkgCacheSizes
     """
     fptrlist::Int
 end
-PkgCacheSizes() = PkgCacheSizes(0, 0, 0, 0, 0, 0, 0)   # for testing
 
 const cache_displaynames = [
         "system",
@@ -91,14 +90,14 @@ function Base.show(io::IO, szs::PkgCacheSizes)
         nd = max(nd, ndigits(nb))
         ntot += nb
     end
-    print(io, " "^indent); _hdr(io, "Segment sizes (bytes):"); println(io)
+    print(io, " "^indent); _header(io, "Segment sizes (bytes):"); println(io)
     for i = 1:nf
         nb = getfield(szs, i)
         print(io,
             " "^indent,
             "  ",
             rpad(cache_displaynames[i] * ": ", cache_displaynames_l+2))
-        _n(io, lpad(string(nb), nd))
+        _count(io, lpad(string(nb), nd))
         println(io, " (", @sprintf("% 6.2f", 100*nb/ntot), "%)")
     end
 end
@@ -182,7 +181,6 @@ struct PkgCacheInfo
     """
     verbose::Symbol
 end
-PkgCacheInfo(cachefile::AbstractString, modules) = PkgCacheInfo(cachefile, Vector{Module}(modules), [], Method[], Core.CodeInstance[], Core.CodeInstance[], [], [], 0, PkgCacheSizes(), [], Method[], :none)
 
 # Calling `jl_restore_package_image_from_file` / `jl_restore_incremental` twice on the
 # same cache file in one session corrupts internal loader state and segfaults. Cache by
@@ -324,10 +322,10 @@ function show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
     total_internal = sum(length, values(methods_by_module); init=0)
     total_internal == 0 && return
 
-    print(io, "  "); _hdr(io, "Internal methods"); print(io, " ("); _n(io, total_internal); println(io, " total):")
+    print(io, "  "); _header(io, "Internal methods"); print(io, " ("); _count(io, total_internal); println(io, " total):")
     sorted_modules = sort(collect(methods_by_module); by=x->length(x[2]), rev=true)
     for (mod, mset) in sorted_modules
-        print(io, "    "); _mod(io, mod); print(io, ": "); _n(io, length(mset)); println(io, " methods")
+        print(io, "    "); _modname(io, mod); print(io, ": "); _count(io, length(mset)); println(io, " methods")
         # Group by the function the Method belongs to (using `method.name`, the symbol of
         # the function being defined — independent of which binding aliases reference it).
         by_function = Dict{Symbol, Vector{Method}}()
@@ -338,7 +336,7 @@ function show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
             ms = by_function[fname]
             print(io, "      ")
             printstyled(io, fname; color=_FUNCTION_COLOR)
-            print(io, " ("); _n(io, length(ms)); println(io, " methods)")
+            print(io, " ("); _count(io, length(ms)); println(io, " methods)")
             # Render each Method via its own color-aware `show` (highlights source location).
             method_lines = sort!([sprint(show, m; context=io) for m in ms])
             for line in method_lines
@@ -356,8 +354,8 @@ Display detailed information about external methods when verbose mode is enabled
 function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
     # Show truly external methods (extension methods defined for functions in other modules)
     if !isempty(info.external_methods)
-        print(io, "  "); _hdr(io, "External methods (extending functions from other modules)")
-        print(io, " ("); _n(io, length(info.external_methods)); println(io, " total):")
+        print(io, "  "); _header(io, "External methods (extending functions from other modules)")
+        print(io, " ("); _count(io, length(info.external_methods)); println(io, " total):")
         # Group unique method definitions by the module that owns the function being extended.
         # `method.module` is the defining (worklist) module — uninformative for extension methods,
         # which by definition all live in the worklist module. Use the function-owner module instead.
@@ -374,7 +372,7 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
 
         sorted_modules = sort(collect(module_methods); by=x->length(x[2]), rev=true)
         for (mod, ms) in sorted_modules
-            print(io, "    "); _mod(io, mod); print(io, " ("); _n(io, length(ms)); println(io, " methods):")
+            print(io, "    "); _modname(io, mod); print(io, " ("); _count(io, length(ms)); println(io, " methods):")
             # Render each Method via its own color-aware `show`, propagating caller's IO context.
             method_lines = sort!([sprint(show, m; context=io) for m in ms])
             for line in method_lines
@@ -384,8 +382,8 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
     end
 
     if !isempty(info.new_specializations)
-        print(io, "  "); _hdr(io, "New specializations of external methods")
-        print(io, " ("); _n(io, length(info.new_specializations)); println(io, " total):")
+        print(io, "  "); _header(io, "New specializations of external methods")
+        print(io, " ("); _count(io, length(info.new_specializations)); println(io, " total):")
         # Group by module for better organization
         module_specs = Dict{Module, Vector{String}}()
         for spec in info.new_specializations
@@ -400,7 +398,7 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
 
         sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
         for (mod, specs) in sorted_modules
-            print(io, "    "); _mod(io, mod); print(io, " ("); _n(io, length(specs)); println(io, " specializations):")
+            print(io, "    "); _modname(io, mod); print(io, " ("); _count(io, length(specs)); println(io, " specializations):")
             sort!(specs)
             for spec in specs
                 println(io, "      ", spec)
@@ -431,7 +429,7 @@ function show_verbose_internal_method_specializations(io::IO, info::PkgCacheInfo
 
         sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
         for (mod, specs) in sorted_modules
-            print(io, "    "); _mod(io, mod); print(io, " ("); _n(io, length(specs)); println(io, " specializations):")
+            print(io, "    "); _modname(io, mod); print(io, " ("); _count(io, length(specs)); println(io, " specializations):")
             sort!(specs)
             for spec in specs
                 println(io, "      ", spec)
@@ -471,25 +469,25 @@ function Base.show(io::IO, info::PkgCacheInfo)
         total_internal_specs = total_internal_method_specs
     end
 
-    _hdr(io, "Contents of "); printstyled(io, info.cachefile; bold=true); println(io, ':')
+    _header(io, "Contents of "); printstyled(io, info.cachefile; bold=true); println(io, ':')
     print(io, "  modules: [")
     for (i, m) in enumerate(info.modules)
         i == 1 || print(io, ", ")
-        _mod(io, m)
+        _modname(io, m)
     end
     println(io, ']')
     !isempty(info.init_order) && println(io, "  init order: ", info.init_order)
 
     # Internal methods: always print a one-line summary; in verbose mode add the detail block.
     if total_internal > 0
-        print(io, "  "); _n(io, total_internal); print(io, " internal methods")
+        print(io, "  "); _count(io, total_internal); print(io, " internal methods")
         if length(internal_methods) > 1
             print(io, " (")
             sorted_internal = sort(collect(internal_methods); by=last, rev=true)
             for i = 1:length(sorted_internal)
                 mod, count = sorted_internal[i]
                 i == 1 || print(io, ", ")
-                _mod(io, mod); print(io, " "); _n(io, count)
+                _modname(io, mod); print(io, " "); _count(io, count)
             end
             print(io, ")")
         end
@@ -501,44 +499,44 @@ function Base.show(io::IO, info::PkgCacheInfo)
 
     # Internal method specializations: summary line, plus detail in verbose mode.
     if total_internal_method_specs > 0
-        print(io, "  "); _n(io, total_internal_method_specs); print(io, " specializations of internal methods ")
+        print(io, "  "); _count(io, total_internal_method_specs); print(io, " specializations of internal methods ")
         for i = 1:min(3, length(internal_method_spec_sorted))
             mod, count = internal_method_spec_sorted[i]
             pct = round(100*count/total_internal_method_specs; digits=1)
-            print(io, i==1 ? "(" : ", "); _mod(io, mod); print(io, " ", pct, "%")
+            print(io, i==1 ? "(" : ", "); _modname(io, mod); print(io, " ", pct, "%")
         end
         println(io, length(internal_method_spec_sorted) > 3 ? ", ...)" : ")")
     elseif internal_specs === nothing
         println(io, "  specializations of internal methods: (requires MethodAnalysis.jl)")
     elseif total_internal_specs > 0
-        print(io, "  "); _n(io, total_internal_specs); print(io, " specializations of internal methods ")
+        print(io, "  "); _count(io, total_internal_specs); print(io, " specializations of internal methods ")
         for i = 1:min(3, length(internal_specs_sorted))
             mod, count = internal_specs_sorted[i]
             pct = round(100*count/total_internal_specs; digits=1)
-            print(io, i==1 ? "(" : ", "); _mod(io, mod); print(io, " ", pct, "%")
+            print(io, i==1 ? "(" : ", "); _modname(io, mod); print(io, " ", pct, "%")
         end
         println(io, length(internal_specs_sorted) > 3 ? ", ...)" : ")")
     end
     if info.verbose == :internal || info.verbose == :all
         show_verbose_internal_method_specializations(io, info)
         if internal_specs !== nothing && total_internal_specs != total_internal_method_specs
-            print(io, "  "); _hdr(io, "MethodAnalysis internal specializations")
-            print(io, " ("); _n(io, total_internal_specs); println(io, " total):")
+            print(io, "  "); _header(io, "MethodAnalysis internal specializations")
+            print(io, " ("); _count(io, total_internal_specs); println(io, " total):")
             for (mod, count) in internal_specs_sorted
-                print(io, "    "); _mod(io, mod); print(io, ": "); _n(io, count); println(io, " specializations")
+                print(io, "    "); _modname(io, mod); print(io, ": "); _count(io, count); println(io, " specializations")
             end
         end
     end
 
     # External methods: summary lines, plus detail in verbose mode.
     if !isempty(info.external_methods)
-        print(io, "  "); _n(io, length(info.external_methods)); println(io, " external methods")
+        print(io, "  "); _count(io, length(info.external_methods)); println(io, " external methods")
     end
     if !isempty(info.new_specializations)
-        print(io, "  "); _n(io, length(info.new_specializations)); print(io, " new specializations of external methods ")
+        print(io, "  "); _count(io, length(info.new_specializations)); print(io, " new specializations of external methods ")
         for i = 1:min(3, length(nspecs))
             m, n = nspecs[i]
-            print(io, i==1 ? "(" : ", "); _mod(io, m); print(io, " ", round(100*n/nspecs_tot; digits=1), "%")
+            print(io, i==1 ? "(" : ", "); _modname(io, m); print(io, " ", round(100*n/nspecs_tot; digits=1), "%")
         end
         println(io, length(nspecs) > 3 ? ", ...)" : ")")
     end
@@ -547,13 +545,13 @@ function Base.show(io::IO, info::PkgCacheInfo)
     end
 
     if !isempty(info.new_method_roots)
-        print(io, "  "); _n(io, length(info.new_method_roots) ÷ 2); println(io, " methods with new roots")
+        print(io, "  "); _count(io, length(info.new_method_roots) ÷ 2); println(io, " methods with new roots")
     end
 
     print(io, "  ", rpad("file size: ", cache_displaynames_l+2))
-    _n(io, info.filesize); println(io, " (", Base.format_bytes(info.filesize), ")")
+    _count(io, info.filesize); println(io, " (", Base.format_bytes(info.filesize), ")")
     show(IOContext(io, :indent => 2), info.cachesizes)
-    print(io, "  "); _hdr(io, "Image targets:"); println(io)
+    print(io, "  "); _header(io, "Image targets:"); println(io)
     for t in info.image_targets
         println(io, "    ", t)
     end
