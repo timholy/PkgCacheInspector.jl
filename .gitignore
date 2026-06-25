@@ -2,5 +2,8 @@
 *.jl.cov
 *.jl.mem
 /Manifest.toml
+/Manifest-v*.toml
+/test/Manifest.toml
 /docs/build/
 /docs/Manifest.toml
+REVIEW.md
