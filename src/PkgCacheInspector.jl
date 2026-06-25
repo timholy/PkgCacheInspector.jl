@@ -233,9 +233,11 @@ count_internal_specializations(::Any) = nothing
 # as opposed to external methods which extend functions from other modules.
 function count_internal_methods(info::PkgCacheInfo)
     method_counts = Dict{Module,Int}()
-    Base.visit(Core.GlobalMethods) do method
-        if method.module in info.modules
-            method_counts[method.module] = get(method_counts, method.module, 0) + 1
+    @static if isdefined(Core, :GlobalMethods)
+        Base.visit(Core.GlobalMethods) do method
+            if method.module in info.modules
+                method_counts[method.module] = get(method_counts, method.module, 0) + 1
+            end
         end
     end
     return method_counts
@@ -251,12 +253,20 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_ta
         throw(sv)
     end
     Base.register_restored_modules(sv, pkg, path)
-    return PkgCacheInfo(path, sv[1:6]..., filesize(path), PkgCacheSizes(sv[7]...), image_targets)
+    @static if VERSION >= v"1.12.0-DEV.0"
+        # Julia 1.12+: sv = (modules, init_order, edges, ext_edges, extext_methods, method_roots_list, cachesizes)
+        return PkgCacheInfo(path, sv[1:6]..., filesize(path), PkgCacheSizes(sv[7]...), image_targets)
+    else
+        # Julia 1.11: sv = (modules, init_order, extext_methods, new_ext_cis, method_roots_list, ext_targets, edges, cachesizes)
+        # Skip ext_targets (sv[6])
+        return PkgCacheInfo(path, sv[1], sv[2], sv[3], sv[4], sv[5], sv[7],
+                            filesize(path), PkgCacheSizes(sv[8]...), image_targets)
+    end
 end
 
 function info_cachefile(pkg::PkgId, path::String)
     return @lock require_lock begin
-        local depmodnames, image_targets
+        local depmodnames, clone_targets, image_targets
         io = open(path, "r")
         try
             # isvalid_cache_header returns checksum id or zero
@@ -278,7 +288,7 @@ function info_cachefile(pkg::PkgId, path::String)
             depmods[i] = dep
         end
         # then load the file
-        if isdefined(Base, :ocachefile_from_cachefile)
+        if !isempty(clone_targets) && isdefined(Base, :ocachefile_from_cachefile)
             return info_cachefile(pkg, Base.ocachefile_from_cachefile(path), depmods, image_targets, true)
         end
         info_cachefile(pkg, path, depmods, image_targets)
