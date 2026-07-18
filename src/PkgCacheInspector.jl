@@ -202,7 +202,7 @@ const _INFO_CACHE = Dict{String, PkgCacheInfo}()
 Unpack the SimpleVector returned by `jl_restore_incremental`/`jl_restore_package_image_from_file`
 (with `completeinfo=true`), normalizing across Julia versions.
 
-Four layouts are supported:
+Five layouts are supported:
 
 - Julia 1.11 (8-elem): `(restored, init_order, extext_methods, new_ext_cis,
   method_roots_list, ext_targets, edges, cachesizes_sv)`. `ext_targets` is unused here.
@@ -213,10 +213,12 @@ Four layouts are supported:
   On these releases the `extext_methods` (TypeMapEntries) and `new_ext_cis` arrays are
   populated inside the loader but **dropped** before being returned, so `extext_entries` is
   always empty here. See the JuliaLang/julia source `staticdata.c` for the fix.
-- Post-fix master (7-elem): `(restored, init_order, internal_methods, extext_methods,
+- Post-fix Julia 1.13 (7-elem): `(restored, init_order, internal_methods, extext_methods,
   new_ext_cis, method_roots_list, cachesizes_sv)`. Distinguished from the 1.12 7-elem
   layout by `VERSION` (the layouts are not type-distinguishable when their arrays are
   empty).
+- Current master (6-elem): `(restored, init_order, internal_methods, extext_methods,
+  method_roots_list, cachesizes_sv)`. `new_ext_cis` is no longer surfaced to inspectors.
 """
 function _unpack_restored_sv(sv)
     n = length(sv)
@@ -240,7 +242,7 @@ function _unpack_restored_sv(sv)
         method_roots_list = sv[6]
         cachesizes_raw = sv[7]
     elseif n == 7
-        # Post-fix master layout: internal_methods, extext_methods, new_ext_cis
+        # Post-fix Julia 1.13 layout: internal_methods, extext_methods, new_ext_cis
         for x in sv[3]
             if isa(x, Core.CodeInstance)
                 push!(code_instances, x)
@@ -252,6 +254,19 @@ function _unpack_restored_sv(sv)
         for x in sv[5]; isa(x, Core.CodeInstance) && push!(code_instances, x); end
         method_roots_list = sv[6]
         cachesizes_raw = sv[7]
+    elseif n == 6
+        # Current master layout: internal_methods, extext_methods, method_roots, cachesizes.
+        # The serialized new-ext-CodeInstance array is no longer returned to inspectors.
+        for x in sv[3]
+            if isa(x, Core.CodeInstance)
+                push!(code_instances, x)
+            elseif isa(x, Method)
+                push!(internal_methods, x)
+            end
+        end
+        for x in sv[4]; isa(x, Core.TypeMapEntry) && push!(extext_entries, x); end
+        method_roots_list = sv[5]
+        cachesizes_raw = sv[6]
     elseif n == 5
         # Julia 1.13 .. 1.14.0-DEV pre-fix layout (buggy: extext_entries is unavailable).
         for x in sv[3]
@@ -294,6 +309,23 @@ function _split_code_instances(code_instances, modules)
     return internal, external
 end
 
+function _binding_internal_methods(modules)
+    methods_by_module = Dict{Module, Set{Method}}()
+    for mod in modules
+        for name in names(mod; all=true)
+            isdefined(mod, name) || continue
+            obj = getfield(mod, name)
+            if isa(obj, Function) || isa(obj, DataType)
+                for method in methods(obj)
+                    method.module == mod || continue
+                    push!(get!(Set{Method}, methods_by_module, mod), method)
+                end
+            end
+        end
+    end
+    return methods_by_module
+end
+
 """
     show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
 
@@ -313,18 +345,7 @@ function show_verbose_internal_methods(io::IO, info::PkgCacheInfo)
             push!(get!(Set{Method}, methods_by_module, m.module), m)
         end
     else
-        for mod in info.modules
-            for name in names(mod; all=true)
-                isdefined(mod, name) || continue
-                obj = getfield(mod, name)
-                if isa(obj, Function) || (isa(obj, Type) && isa(obj, DataType))
-                    for method in methods(obj)
-                        method.module == mod || continue
-                        push!(get!(Set{Method}, methods_by_module, mod), method)
-                    end
-                end
-            end
-        end
+        methods_by_module = _binding_internal_methods(info.modules)
     end
 
     total_internal = sum(length, values(methods_by_module); init=0)
@@ -593,8 +614,16 @@ function _extension_owner_module(method::Method)
     isa(sig, DataType) || return method.module
     isempty(sig.parameters) && return method.module
     t1 = sig.parameters[1]
-    if isa(t1, DataType) && t1.name === Type.body.name && !isempty(t1.parameters)
+    kwcall_type = isdefined(Core, :kwcall) ? typeof(getfield(Core, :kwcall)) : nothing
+    if t1 === kwcall_type && length(sig.parameters) >= 3
+        # kwcall(kwargs, f, args...): the third signature parameter owns the
+        # function being called; Core.kwcall itself is just shared machinery.
+        t1 = sig.parameters[3]
+    end
+    t1 = isa(t1, UnionAll) ? Base.unwrap_unionall(t1) : t1
+    if isa(t1, DataType) && Base.isType(t1) && !isempty(t1.parameters)
         ft = t1.parameters[1]
+        ft = isa(ft, UnionAll) ? Base.unwrap_unionall(ft) : ft
         isa(ft, DataType) && return ft.name.module
     elseif isa(t1, DataType)
         return t1.name.module
@@ -623,7 +652,12 @@ function count_internal_methods(info::PkgCacheInfo)
         end
         return method_counts
     end
-    _GLOBAL_METHODS === nothing && return method_counts
+    if _GLOBAL_METHODS === nothing
+        for (mod, mset) in _binding_internal_methods(info.modules)
+            method_counts[mod] = length(mset)
+        end
+        return method_counts
+    end
     Base.visit(_GLOBAL_METHODS) do method
         if method.module in info.modules
             method_counts[method.module] = get(method_counts, method.module, 0) + 1
@@ -650,25 +684,16 @@ _cache_key(path) = try realpath(path) catch; path end
 Return the subset of [`info.external_methods`](@ref PkgCacheInfo) whose specialized
 function is owned by a module **outside** this pkgimage's worklist — i.e., the true
 "extending external functions" subset (e.g., a package's `Base.show(::IO, ::MyType)`
-method). Filters by the module of the function-type, obtained from
-`Base.unwrap_unionall(m.sig).parameters[1].name.module`.
+method). Ownership is derived from the function type in the method signature.
 
-Methods whose signature does not begin with a singleton function type (e.g. constructors
-for builtin types, callable struct instances) are conservatively classified as extending
-external when their containing type's name module is outside the worklist.
+Constructor signatures and keyword-call wrappers are resolved to their underlying type or
+function before classifying ownership.
 """
 function extending_external_methods(info::PkgCacheInfo)
     worklist = Set{Module}(info.modules)
     out = Method[]
     for m in info.external_methods
-        st = Base.unwrap_unionall(m.sig)
-        isa(st, DataType) || continue
-        isempty(st.parameters) && continue
-        ft = st.parameters[1]
-        ft = isa(ft, UnionAll) ? Base.unwrap_unionall(ft) : ft
-        isa(ft, DataType) || continue
-        isdefined(ft, :name) || continue
-        ft.name.module in worklist || push!(out, m)
+        _extension_owner_module(m) in worklist || push!(out, m)
     end
     return out
 end
@@ -797,6 +822,6 @@ for deeper analysis.
     before otherwise loading the package is recommended.
 """
 info_cachefile(pkgname::AbstractString; verbose::Symbol=:none) = info_cachefile(Base.identify_package(pkgname); verbose)
-info_cachefile(pkg::PkgId, path::AbstractString; verbose::Symbol=:none) = info_cachefile(pkg, String(path), verbose)
+info_cachefile(pkg::PkgId, path::AbstractString; verbose::Symbol=:none) = info_cachefile(pkg, String(path); verbose)
 
 end

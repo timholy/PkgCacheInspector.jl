@@ -10,21 +10,39 @@ Pkg.precompile("Colors")
 
 module EmptyPkg end
 
+module MethodOwnerFixture
+struct LocalCtor
+    value::Int
+end
+LocalCtor(; value=1) = LocalCtor(value)
+local_kw(x; increment=1) = x + increment
+Base.show(io::IO, value::LocalCtor) = print(io, value.value)
+end
+
 # Test-only constructors for an "empty" PkgCacheInfo (no associated cachefile).
 empty_cachesizes() = PkgCacheSizes(0, 0, 0, 0, 0, 0, 0)
-function empty_info(cachefile::AbstractString, modules)
-    PkgCacheInfo(cachefile, Vector{Module}(modules), [], Method[],
+function empty_info(cachefile::AbstractString, modules; external_methods=Method[])
+    PkgCacheInfo(cachefile, Vector{Module}(modules), [], external_methods,
                  Core.CodeInstance[], Core.CodeInstance[], [], [],
                  0, empty_cachesizes(), [], Method[], :none)
 end
 
 @testset "PkgCacheInspector.jl" begin
+    # Current Julia master returns a 6-element complete-info loader tuple.
+    raw_sizes = (1, 2, 3, 4, 5, 6, 7)
+    parts = PkgCacheInspector._unpack_restored_sv((
+        Module[EmptyPkg], Any[], Any[], Any[], Any[], raw_sizes,
+    ))
+    @test parts.modules == Module[EmptyPkg]
+    @test parts.method_roots_list == Any[]
+    @test parts.cachesizes_raw === raw_sizes
+
     info = info_cachefile("Colors", verbose = :all)
     @test isa(info, PkgCacheInfo)
     str = sprint(show, info)
     @test occursin("relocations", str) && occursin("new specializations", str) && occursin("targets", str)
     @test occursin("file size", str)
-    @test occursin("internal methods", str)
+    @test occursin("Internal methods", str)
     @test occursin("specializations of internal methods", str)
 
     mis = methodinstances(info)
@@ -37,6 +55,11 @@ end
     @test isa(info_again, PkgCacheInfo)
     @test info_again.cachefile == info.cachefile
     @test info_again.verbose === :none
+    @test occursin(r"\d+ internal methods", sprint(show, info_again))
+
+    # AbstractString paths forward `verbose` as a keyword.
+    missing_path = SubString(joinpath(tempdir(), "PkgCacheInspector-definitely-missing.ji"), 1)
+    @test_throws SystemError info_cachefile(Base.PkgId("Missing"), missing_path; verbose=:all)
 
     # Empty pkgimages do not cause issues
     info = empty_info("EmptyPkg.so", [EmptyPkg])
@@ -51,7 +74,24 @@ end
     @test eem isa Vector{Method}
     @test issubset(Set(eem), Set(colors_info.external_methods))
     worklist = Set(colors_info.modules)
-    @test all(m -> !(Base.unwrap_unionall(m.sig).parameters[1] isa DataType &&
-                     Base.unwrap_unionall(m.sig).parameters[1].name.module in worklist), eem)
+    @test all(m -> PkgCacheInspector._extension_owner_module(m) ∉ worklist, eem)
     @test isempty(extending_external_methods(empty_info("EmptyPkg.so", [EmptyPkg])))
+
+    # Constructors and keyword wrappers for package-owned functions are internal;
+    # an actual extension of Base.show is external.
+    ctor_method = which(MethodOwnerFixture.LocalCtor, (Int,))
+    kw_method = which(
+        Core.kwcall,
+        (NamedTuple{(:increment,), Tuple{Int}}, typeof(MethodOwnerFixture.local_kw), Int),
+    )
+    show_method = which(show, (IO, MethodOwnerFixture.LocalCtor))
+    owner_info = empty_info(
+        "MethodOwnerFixture.so",
+        [MethodOwnerFixture];
+        external_methods=Method[ctor_method, kw_method, show_method],
+    )
+    @test PkgCacheInspector._extension_owner_module(ctor_method) === MethodOwnerFixture
+    @test PkgCacheInspector._extension_owner_module(kw_method) === MethodOwnerFixture
+    @test PkgCacheInspector._extension_owner_module(show_method) === Base
+    @test extending_external_methods(owner_info) == Method[show_method]
 end
