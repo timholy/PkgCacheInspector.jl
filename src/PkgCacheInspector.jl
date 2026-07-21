@@ -80,6 +80,9 @@ const cache_displaynames = [
         "fptrs"
     ]
 const cache_displaynames_l = maximum(length, cache_displaynames)
+# One distinct color per cache segment; the colored names in the size listing double as
+# the legend for the segment-size colorbar.
+const cache_displaycolors = [:green, :blue, :magenta, :yellow, :cyan, :red, :light_black]
 
 function Base.show(io::IO, szs::PkgCacheSizes)
     indent = get(io, :indent, 0)
@@ -90,13 +93,19 @@ function Base.show(io::IO, szs::PkgCacheSizes)
         nd = max(nd, ndigits(nb))
         ntot += nb
     end
+    if ntot == 0
+        print(io, " "^indent); _header(io, "Segment sizes:"); println(io, " (no size data)")
+        return
+    end
     print(io, " "^indent); _header(io, "Segment sizes (bytes):"); println(io)
+    print(io, " "^indent, "  ")
+    _print_bar(io, [(getfield(szs, i), cache_displaycolors[i]) for i in 1:nf])
+    println(io)
     for i = 1:nf
         nb = getfield(szs, i)
-        print(io,
-            " "^indent,
-            "  ",
-            rpad(cache_displaynames[i] * ": ", cache_displaynames_l+2))
+        print(io, " "^indent, "  ")
+        printstyled(io, cache_displaynames[i]; color=cache_displaycolors[i])
+        print(io, ": ", " "^(cache_displaynames_l - length(cache_displaynames[i])))
         _count(io, lpad(string(nb), nd))
         println(io, " (", @sprintf("% 6.2f", 100*nb/ntot), "%)")
     end
@@ -466,6 +475,76 @@ function show_verbose_internal_method_specializations(io::IO, info::PkgCacheInfo
     end
 end
 
+# Proportional colorbars: shared width and cell-allocation logic.
+const _BAR_WIDTH = 50
+
+# Allocate `_BAR_WIDTH` cells across `vals` proportionally. Every nonzero value gets at
+# least one visible cell; the remainder is handed out one cell at a time to the most
+# under-represented segment (largest-remainder rounding), so widths always sum exactly
+# to the bar width.
+function _bar_widths(vals)
+    total = sum(vals; init=0)
+    widths = [v > 0 ? 1 : 0 for v in vals]
+    total > 0 || return widths
+    exact = [_BAR_WIDTH * v / total for v in vals]
+    for _ in 1:(_BAR_WIDTH - sum(widths))
+        i = argmax(exact .- widths)
+        widths[i] += 1
+    end
+    return widths
+end
+
+# Print one `[■■■…]` bar for `entries`, a vector of `(count, color)` pairs.
+function _print_bar(io::IO, entries)
+    widths = _bar_widths(first.(entries))
+    print(io, "[")
+    for ((_, color), w) in zip(entries, widths)
+        printstyled(io, "■"^w; color)
+    end
+    print(io, "]")
+end
+
+const _SUMMARY_BAR_SEGMENTS = (
+    (label = "internal methods", color = :green),
+    (label = "internal specs",   color = :light_green),
+    (label = "external methods", color = :blue),
+    (label = "external specs",   color = :light_blue),
+)
+
+"""
+    show_summary_bar(io::IO, info::PkgCacheInfo)
+
+Print a proportional colorbar comparing the cache's method-level contents: methods and
+specializations defined by the package's own modules (internal) vs methods extending
+external functions and new specializations of external methods (external). A legend with
+per-segment counts follows on the next line.
+"""
+function show_summary_bar(io::IO, info::PkgCacheInfo)
+    n_internal_specs = length(info.internal_method_specializations)
+    if n_internal_specs == 0
+        ma_specs = count_internal_specializations(info)
+        ma_specs === nothing || (n_internal_specs = sum(values(ma_specs); init=0))
+    end
+    counts = (
+        sum(values(count_internal_methods(info)); init=0),
+        n_internal_specs,
+        length(extending_external_methods(info)),
+        length(info.new_specializations),
+    )
+    sum(counts) == 0 && return
+    print(io, "  ")
+    _print_bar(io, collect(zip(counts, [s.color for s in _SUMMARY_BAR_SEGMENTS])))
+    println(io)
+    print(io, "  ")
+    for (n, seg) in zip(counts, _SUMMARY_BAR_SEGMENTS)
+        n == 0 && continue
+        print(io, "  ")
+        printstyled(io, "■ ", seg.label; color=seg.color)
+        print(io, " "); _count(io, n)
+    end
+    println(io)
+end
+
 function Base.show(io::IO, info::PkgCacheInfo)
     nspecs = count_module_specializations(info.new_specializations)
     nspecs = sort(collect(nspecs); by=last, rev=true)
@@ -505,6 +584,7 @@ function Base.show(io::IO, info::PkgCacheInfo)
     end
     println(io, ']')
     !isempty(info.init_order) && println(io, "  init order: ", info.init_order)
+    show_summary_bar(io, info)
 
     # Internal methods: always print a one-line summary; in verbose mode add the detail block.
     if total_internal > 0

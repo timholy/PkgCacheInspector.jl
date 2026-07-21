@@ -45,6 +45,18 @@ end
     @test occursin("Internal methods", str)
     @test occursin("specializations of internal methods", str)
 
+    # Colorbars: the method-summary bar and the segment-sizes bar are both full width,
+    # and the summary bar's legend lists nonzero categories with counts.
+    bar = Regex("\\[■{$(PkgCacheInspector._BAR_WIDTH)}\\]")
+    @test length(collect(eachmatch(bar, str))) == 2
+    @test occursin(r"■ internal methods \d+", str)
+    @test occursin(r"■ external methods \d+", str)
+
+    # _bar_widths fills the bar exactly and keeps every nonzero segment visible.
+    @test sum(PkgCacheInspector._bar_widths([1, 10000, 0, 3])) == PkgCacheInspector._BAR_WIDTH
+    @test PkgCacheInspector._bar_widths([1, 10000, 0, 3])[[1, 3, 4]] == [1, 0, 1]
+    @test PkgCacheInspector._bar_widths([0, 0]) == [0, 0]
+
     mis = methodinstances(info)
     @test eltype(mis) === Core.MethodInstance
     @test length(mis) > 100
