@@ -412,26 +412,7 @@ function show_verbose_external_methods(io::IO, info::PkgCacheInfo)
     if !isempty(info.new_specializations)
         print(io, "  "); _header(io, "New specializations of external methods")
         print(io, " ("); _count(io, length(info.new_specializations)); println(io, " total):")
-        # Group by module for better organization
-        module_specs = Dict{Module, Vector{String}}()
-        for spec in info.new_specializations
-            mi = spec.def
-            isa(mi, Core.MethodInstance) && isa(mi.def, Method) || continue
-            mod = mi.def.module
-            specs = get!(() -> String[], module_specs, mod)
-            # Use Julia's compact method signature display (color-aware via io ctx).
-            signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
-            push!(specs, _truncate_for(io, signature, 8))
-        end
-
-        sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
-        for (mod, specs) in sorted_modules
-            print(io, "    "); _modname(io, mod); print(io, " ("); _count(io, length(specs)); println(io, " specializations):")
-            sort!(specs)
-            for spec in specs
-                println(io, "      ", spec)
-            end
-        end
+        _show_grouped_specializations(io, info.new_specializations)
     end
 end
 
@@ -443,25 +424,36 @@ Display detailed information about internal method specializations when verbose 
 function show_verbose_internal_method_specializations(io::IO, info::PkgCacheInfo)
     if !isempty(info.internal_method_specializations)
         println(io, "  Internal method specializations (", length(info.internal_method_specializations), " total):")
-        # Group by module for better organization
-        module_specs = Dict{Module, Vector{String}}()
-        for ci in info.internal_method_specializations
-            mi = ci.def
-            isa(mi, Core.MethodInstance) && isa(mi.def, Method) || continue
-            mod = mi.def.module
-            specs = get!(() -> String[], module_specs, mod)
-            # Use Julia's compact method signature display (color-aware via io ctx).
-            signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
-            push!(specs, _truncate_for(io, signature, 8))
-        end
+        _show_grouped_specializations(io, info.internal_method_specializations)
+    end
+end
 
-        sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
-        for (mod, specs) in sorted_modules
-            print(io, "    "); _modname(io, mod); print(io, " ("); _count(io, length(specs)); println(io, " specializations):")
-            sort!(specs)
-            for spec in specs
-                println(io, "      ", spec)
+# Group CodeInstances by defining module and render each with a tier marker:
+#   [O2] for TIER_OPTIMIZED (promoted during precompile), [O0] otherwise.
+# Sorted so promoted entries appear first within each module.
+function _show_grouped_specializations(io::IO, cis)
+    module_specs = Dict{Module, Vector{Tuple{Bool,String}}}()
+    for ci in cis
+        mi = ci.def
+        isa(mi, Core.MethodInstance) && isa(mi.def, Method) || continue
+        mod = mi.def.module
+        entries = get!(() -> Tuple{Bool,String}[], module_specs, mod)
+        signature = sprint(Base.show_tuple_as_call, Symbol(""), mi.specTypes; context=io)
+        push!(entries, (tier_optimized(ci), _truncate_for(io, signature, 13)))
+    end
+
+    sorted_modules = sort(collect(module_specs); by=x->length(x[2]), rev=true)
+    for (mod, entries) in sorted_modules
+        print(io, "    "); _modname(io, mod); print(io, " ("); _count(io, length(entries)); println(io, " specializations):")
+        sort!(entries; by = x -> (!x[1], x[2]))
+        for (hot, sig) in entries
+            print(io, "      ")
+            if hot
+                printstyled(io, "[O2] "; color=_COUNT_COLOR, bold=true)
+            else
+                print(io, "[O0] ")
             end
+            println(io, sig)
         end
     end
 end
@@ -576,6 +568,21 @@ function Base.show(io::IO, info::PkgCacheInfo)
         show_verbose_external_methods(io, info)
     end
 
+    # Tier-promoted (PGO) summary across both CI lists. The TIER_OPTIMIZED bit is
+    # set by the tiered runtime when a CI was upgraded from -O0 to -O2 because
+    # it was called during precompile execution. AOT codegen does not (yet) read
+    # this bit; this line exists to verify the signal is reaching the pkgimage.
+    tier_int = count(tier_optimized, info.internal_method_specializations)
+    tier_ext = count(tier_optimized, info.new_specializations)
+    tier_tot = tier_int + tier_ext
+    if tier_tot > 0
+        denom = length(info.internal_method_specializations) + length(info.new_specializations)
+        pct = denom > 0 ? round(100 * tier_tot / denom; digits=1) : 0.0
+        print(io, "  "); _count(io, tier_tot)
+        print(io, " tier-promoted specializations ("); _count(io, tier_int); print(io, " internal, ")
+        _count(io, tier_ext); println(io, " external; ", pct, "% of total)")
+    end
+
     if !isempty(info.new_method_roots)
         print(io, "  "); _count(io, length(info.new_method_roots) ÷ 2); println(io, " methods with new roots")
     end
@@ -590,6 +597,16 @@ function Base.show(io::IO, info::PkgCacheInfo)
 end
 
 moduleof(m::Method) = m.module
+
+# Bit set by the tiered-compilation runtime when a CodeInstance was promoted from
+# baseline (-O0) to optimized (-O2) during precompile-time execution. Preserved
+# through pkgimage serialization as PGO signal: it marks which methods were "hot"
+# while the precompile workload ran in the child Julia process.
+# Source: `JL_CI_FLAGS_TIER_OPTIMIZED` in `src/julia.h`.
+const _CI_FLAG_TIER_OPTIMIZED = 0x20
+
+tier_optimized(ci::Core.CodeInstance) =
+    (getfield(ci, :flags, :monotonic) & _CI_FLAG_TIER_OPTIMIZED) != 0
 
 function count_module_specializations(new_specializations)
     modcount = Dict{Module,Int}()
