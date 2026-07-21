@@ -172,7 +172,9 @@ struct PkgCacheInfo
     """
     edges::Vector{Any}
     """
-    The total size of the cache file.
+    The total size of the file that was loaded. For pkgimage loads this is the shared
+    library (`.so`/`.dylib`), which also contains native code and object-file overhead,
+    so it exceeds the sum of the serialized-data segment sizes in `cachesizes`.
     """
     filesize::Int
     """
@@ -662,6 +664,13 @@ function Base.show(io::IO, info::PkgCacheInfo)
 
     print(io, "  ", rpad("file size: ", cache_displaynames_l+2))
     _count(io, info.filesize); println(io, " (", Base.format_bytes(info.filesize), ")")
+    # For pkgimage (.so/.dylib) loads the file also holds native code and object-file
+    # overhead, so the serialized data the segments describe is smaller than the file.
+    seg_total = sum(getfield(info.cachesizes, i) for i in 1:nfields(info.cachesizes); init=0)
+    if seg_total > 0 && seg_total != info.filesize
+        print(io, "  ", rpad("serialized data: ", cache_displaynames_l+2))
+        _count(io, seg_total); println(io, " (", Base.format_bytes(seg_total), ")")
+    end
     show(IOContext(io, :indent => 2), info.cachesizes)
     print(io, "  "); _header(io, "Image targets:"); println(io)
     for t in info.image_targets
@@ -785,8 +794,20 @@ function info_cachefile(pkg::PkgId, path::String, depmods::Vector{Any}, image_ta
         @warn "`info_cachefile` already called for this cache file; returning cached result. Reloading the same pkgimage in one session would corrupt the runtime." path
         return _with_verbose(cached, verbose)
     end
+    # If the package is already loaded (e.g. `import Pkg` before `info_cachefile("Pkg")`),
+    # its pkgimage is already mapped and relocated in place; `dlopen` of the same file
+    # returns the same mutated mapping and the restore segfaults deep in `jl_read_reloclist`.
+    # Detect this up front and raise a catchable error instead.
+    if Base.root_module_exists(pkg)
+        error(pkg.name, " is already loaded in this session; restoring its pkgimage again ",
+              "would corrupt the runtime (and can crash Julia). Run `info_cachefile` in a ",
+              "fresh session, before loading the package.")
+    end
     if isocache
-        sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint, Cstring, Cint), path, depmods, true, pkg.name, false)
+        # `ignore_native=true`: mark the restored image so downstream package loads do not
+        # reuse native code from this inspection load (see JuliaLang/julia#52123). Code from
+        # the inspected image itself may run interpreted/recompiled as a result.
+        sv = ccall(:jl_restore_package_image_from_file, Any, (Cstring, Any, Cint, Cstring, Cint), path, depmods, true, pkg.name, true)
     else
         sv = ccall(:jl_restore_incremental, Any, (Cstring, Any, Cint, Cstring), path, depmods, true, pkg.name)
     end
@@ -816,16 +837,27 @@ end
 
 function info_cachefile(pkg::PkgId, path::String; verbose::Symbol=:none)
     return @lock require_lock begin
-        local depmodnames, image_targets
+        local depmodnames, image_targets, datastart, dataend
         io = open(path, "r")
         try
             # isvalid_cache_header returns checksum id or zero
             isvalid_cache_header(io) == 0 && throw(ArgumentError("Invalid header in cache file $path."))
+            # `jl_read_verify_header` (called by `isvalid_cache_header`) reads exactly through
+            # the header's trailing (datastart, dataend) offsets of the serialized-data blob;
+            # recover them so we can detect header-only stub `.ji` files below.
+            endpos = position(io)
+            seek(io, endpos - 16)
+            datastart = read(io, Int64)
+            dataend = read(io, Int64)
+            seek(io, endpos)
             header = parse_cache_header(io, path)
             depmodnames = header[3]
             # Position of `clone_targets` differs between Julia versions; locate it by type.
-            clone_targets = header[findfirst(x -> x isa Vector{UInt8}, header)::Int]
-            image_targets = Any[Base.parse_image_targets(clone_targets)...]
+            targets_idx = findfirst(x -> x isa Vector{UInt8}, header)
+            clone_targets = targets_idx === nothing ? UInt8[] : header[targets_idx]
+            # Caches built without native code (`--pkgimages=no`) record an empty blob, on
+            # which `Base.parse_image_targets` throws an `EOFError`; treat it as no targets.
+            image_targets = isempty(clone_targets) ? Any[] : Any[Base.parse_image_targets(clone_targets)...]
             isvalid_file_crc(io) || throw(ArgumentError("Invalid checksum in cache file $path."))
         finally
             close(io)
@@ -837,6 +869,15 @@ function info_cachefile(pkg::PkgId, path::String; verbose::Symbol=:none)
             Base.ocachefile_from_cachefile(path), true
         else
             path, false
+        end
+        if isocache
+            isfile(load_path) || throw(ArgumentError(
+                "cache file $path records native-code targets but its pkgimage $load_path is missing."))
+        elseif !(0 < datastart < dataend)
+            # A pkgimage-mode `.ji` is a header-only stub (the data lives in the `.so`/`.dylib`);
+            # feeding it to `jl_restore_incremental` crashes Julia, so refuse it here.
+            throw(ArgumentError(
+                "cache file $path has no serialized data (header-only pkgimage stub?); cannot inspect it."))
         end
         # Fast path: same cache file already inspected this session. Avoids reloading deps and
         # the segfault-prone second `jl_restore_*` call. Keyed by the resolved load path so all
@@ -901,7 +942,11 @@ for deeper analysis.
     already been loaded into your session. Restarting with a clean session and using `info_cachefile`
     before otherwise loading the package is recommended.
 """
-info_cachefile(pkgname::AbstractString; verbose::Symbol=:none) = info_cachefile(Base.identify_package(pkgname); verbose)
+function info_cachefile(pkgname::AbstractString; verbose::Symbol=:none)
+    pkg = Base.identify_package(pkgname)
+    pkg === nothing && error("could not identify package ", pkgname, " in the current environment")
+    return info_cachefile(pkg; verbose)
+end
 info_cachefile(pkg::PkgId, path::AbstractString; verbose::Symbol=:none) = info_cachefile(pkg, String(path); verbose)
 
 end

@@ -50,7 +50,14 @@ end
     bar = Regex("\\[■{$(PkgCacheInspector._BAR_WIDTH)}\\]")
     @test length(collect(eachmatch(bar, str))) == 2
     @test occursin(r"■ internal methods \d+", str)
-    @test occursin(r"■ external methods \d+", str)
+    # On Julia 1.13 through 1.14.0-DEV (pre-fix), the loader drops the `extext_methods`
+    # array before returning it, so no external-methods segment can be shown there
+    # (see the `PkgCacheInfo.external_methods` docstring).
+    if !isempty(info.external_methods)
+        @test occursin(r"■ external methods \d+", str)
+    else
+        @test v"1.13-" <= VERSION  # only expected to be unavailable on 1.13+ pre-fix
+    end
 
     # _bar_widths fills the bar exactly and keeps every nonzero segment visible.
     @test sum(PkgCacheInspector._bar_widths([1, 10000, 0, 3])) == PkgCacheInspector._BAR_WIDTH
