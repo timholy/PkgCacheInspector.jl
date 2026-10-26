@@ -114,3 +114,65 @@ end
     @test PkgCacheInspector._extension_owner_module(show_method) === Base
     @test extending_external_methods(owner_info) == Method[show_method]
 end
+
+@testset "cache without native code" begin
+    mktempdir() do dir
+        pkgdir = joinpath(dir, "NoNativePkg")
+        mkpath(joinpath(pkgdir, "src"))
+        write(joinpath(pkgdir, "Project.toml"), """
+            name = "NoNativePkg"
+            uuid = "0c4c4b55-8a0e-4b8e-9d7a-5d6f1f0e2a11"
+            version = "0.1.0"
+            """)
+        write(joinpath(pkgdir, "src", "NoNativePkg.jl"), """
+            module NoNativePkg
+            struct Point
+                x::Int
+            end
+            Base.show(io::IO, p::Point) = print(io, "Point(", p.x, ")")
+            double(p::Point) = Point(2p.x)
+            function workload()
+                ps = [Point(i) for i in 1:3]
+                push!(ps, double(ps[1]))
+                return sum(p -> p.x, ps), sprint(show, ps[end])
+            end
+            workload()
+            end
+            """)
+        depot = joinpath(dir, "depot")
+        sep = Sys.iswindows() ? ";" : ":"
+        # Keep the existing depots after the fresh one so stdlib and test dependency caches stay visible.
+        depot_path = join([depot; DEPOT_PATH], sep) * sep
+        load_path = join([pkgdir; map(p -> isfile(p) ? dirname(p) : p, Base.load_path())], sep)
+        julia = `$(Base.julia_cmd()) --startup-file=no --pkgimages=no`
+        withenv("JULIA_DEPOT_PATH" => depot_path, "JULIA_LOAD_PATH" => load_path) do
+            run(`$julia -e 'Base.compilecache(Base.identify_package("NoNativePkg"))'`)
+            cachedir = joinpath(depot, "compiled", "v$(VERSION.major).$(VERSION.minor)", "NoNativePkg")
+            files = readdir(cachedir)
+            jis = filter(endswith(".ji"), files)
+            @test length(jis) == 1
+            @test !any(f -> endswith(f, Base.Libc.Libdl.dlext), files)
+            # Restore the cache in a separate process so this session never loads the package twice.
+            script = """
+                using PkgCacheInspector
+                info = info_cachefile(Base.identify_package("NoNativePkg"), ARGS[1])
+                println("modules=", join(nameof.(info.modules), ","))
+                println("image_targets=", length(info.image_targets))
+                println("internal_methods=", get(PkgCacheInspector.count_internal_methods(info), only(info.modules), 0))
+                println("internal_specs=", length(info.internal_method_specializations))
+                println("external_methods=", length(PkgCacheInspector.extending_external_methods(info)))
+                println("external_specs=", length(info.new_specializations))
+                println("shown=", occursin("internal methods", sprint(show, info)))
+                """
+            out = read(`$julia -e $script $(joinpath(cachedir, only(jis)))`, String)
+            vals = Dict(split(l, '='; limit=2) for l in split(out, '\n') if occursin('=', l))
+            @test vals["modules"] == "NoNativePkg"
+            @test vals["image_targets"] == "0"
+            @test parse(Int, vals["internal_methods"]) >= 3
+            @test parse(Int, vals["internal_specs"]) > 0
+            @test vals["external_methods"] == "1"
+            @test parse(Int, vals["external_specs"]) > 0
+            @test vals["shown"] == "true"
+        end
+    end
+end
