@@ -216,7 +216,8 @@ Unpack the SimpleVector returned by `jl_restore_incremental`/`jl_restore_package
 Five layouts are supported:
 
 - Julia 1.11 (8-elem): `(restored, init_order, extext_methods, new_ext_cis,
-  method_roots_list, ext_targets, edges, cachesizes_sv)`. `ext_targets` is unused here.
+  method_roots_list, ext_targets, edges, cachesizes_sv)`. `ext_targets` is unused here, and
+  `edges` lists MethodInstances (not CodeInstances) interleaved with their edge indices.
 - Julia 1.12 (7-elem): `(restored, init_order, edges, ext_edges, extext_methods,
   method_roots_list, cachesizes_sv)`.
 - Julia 1.13 .. 1.14.0-DEV pre-fix (5-elem): `(restored, init_order, internal_methods,
@@ -242,7 +243,18 @@ function _unpack_restored_sv(sv)
         # Julia 1.11 layout: extext_methods, new_ext_cis, method_roots, ext_targets, edges, cachesizes
         for x in sv[3]; isa(x, Core.TypeMapEntry) && push!(extext_entries, x); end
         for x in sv[4]; isa(x, Core.CodeInstance) && push!(code_instances, x); end
-        for x in sv[7]; isa(x, Core.CodeInstance) && push!(code_instances, x); end
+        # `edges` lists caller MethodInstances. Callers of external methods can be old
+        # sysimage instances, so only take cached CodeInstances of the package's own methods.
+        for x in sv[7]
+            isa(x, Core.MethodInstance) && isa(x.def, Method) && x.def.module in modules || continue
+            isdefined(x, :cache) || continue
+            ci = x.cache
+            while true
+                push!(code_instances, ci)
+                isdefined(ci, :next) || break
+                ci = ci.next
+            end
+        end
         method_roots_list = sv[5]
         cachesizes_raw = sv[8]
     elseif n == 7 && VERSION < v"1.13-"
